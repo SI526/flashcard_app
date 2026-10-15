@@ -1,11 +1,11 @@
 import { Button, Text, View, StyleSheet, Pressable } from "react-native";
 import {useState} from 'react';
 
-export default function SubjectSelector({subject}) {
+export default function SubjectSelector() {
 
   return (
     <Pressable style={styles.container}>
-    
+      <Text>Subject</Text>
     </Pressable>
   );
 }

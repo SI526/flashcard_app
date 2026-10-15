@@ -1,18 +1,17 @@
-import Flashcard from "@/components/Flashcard";
-import { useState } from "react";
-import { Button, StyleSheet, Text, View } from "react-native";
+import { router } from "expo-router";
+import { Pressable, StyleSheet, Text, View } from "react-native";
 
 export default function Index() {
-  const [savedCard, setSavedCard] = useState("");
-  const handleAddCard = () => {
-    setSavedCard("Card added!");
-  };
   return (
     <View style={styles.container}>
-      <Flashcard term="term" definition="definition"></Flashcard>
-      <Button title="AddCard" onPress={handleAddCard} />
-
-      <Text>{savedCard}</Text>
+      <Text style={styles.introText}>Create your first deck to get started</Text>
+      <Pressable
+        style={styles.buttonContainer}
+        onPress={() => router.navigate("/create")}
+      >
+        <Text>Create New Deck</Text>
+      </Pressable>
+      
     </View>
   );
 }
@@ -25,5 +24,13 @@ const styles = StyleSheet.create({
   },
   buttonContainer: {
     marginTop: 16,
+    borderWidth: 1, 
+    borderColor: "#000", 
+    borderRadius: 8,
+    padding: 10,
   },
+  introText: {
+    fontSize: 25,
+    alignItems: "center",
+  }
 });
