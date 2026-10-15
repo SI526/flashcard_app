@@ -1,5 +1,5 @@
 import { useDecks } from "@/store/decks";
-import { useLocalSearchParams } from "expo-router";
+import { router, useLocalSearchParams } from "expo-router";
 import { Pressable, ScrollView, StyleSheet, Text, View } from "react-native";
 
 export default function Preview({}) {
@@ -13,7 +13,10 @@ export default function Preview({}) {
     <ScrollView contentContainerStyle={{ padding: 24 }}>
       <Text style={styles.deckTitle}>{deck.title}</Text>
       <Text style={styles.deckDescription}>{deck.description}</Text>
-      <Pressable style={styles.startStudyButton}>
+      <Pressable 
+        style={styles.startStudyButton}
+        onPress={() => router.push({ pathname: "/study", params: { id } })}
+      >
         <Text style={styles.buttonText}>Start Studying</Text>
       </Pressable>
       {deck.cards.map((card) => (

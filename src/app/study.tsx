@@ -1,5 +1,6 @@
 import Flashcard from "@/components/Flashcard";
-import { router } from "expo-router";
+import { useDecks } from "@/store/decks";
+import { router, useLocalSearchParams } from "expo-router";
 import { SymbolView, type SymbolViewProps } from "expo-symbols";
 import { useState } from "react";
 import { Pressable, StyleSheet, Text, useWindowDimensions, View } from "react-native";
@@ -14,46 +15,6 @@ import { SafeAreaView } from "react-native-safe-area-context";
 import { scheduleOnRN } from "react-native-worklets";
 
 type Card = { id: string; term: string; definition: string };
-
-// TODO: load the deck for this route's `id` once the deck store exists.
-// Until then, cards 3–6 exercise the edge cases: a long definition and a long
-// term (both must scroll), and an empty and a whitespace-only term (both must
-// show the missing-term message on the back).
-const SAMPLE_CARDS: Card[] = [
-  { id: "1", term: "Mitochondria", definition: "Organelle that produces most of a cell's ATP" },
-  { id: "2", term: "Osmosis", definition: "Diffusion of water across a semipermeable membrane" },
-  {
-    id: "3",
-    term: "Cellular respiration",
-    definition:
-      "The set of metabolic reactions that cells use to convert the chemical energy stored in " +
-      "nutrients into ATP, releasing waste products. It begins with glycolysis in the cytoplasm, " +
-      "which splits one molecule of glucose into two molecules of pyruvate and yields a small net " +
-      "gain of ATP and NADH. In the presence of oxygen, pyruvate enters the mitochondria and is " +
-      "converted to acetyl-CoA, which feeds the citric acid (Krebs) cycle. The cycle releases " +
-      "carbon dioxide and produces NADH and FADH2, which carry high-energy electrons to the " +
-      "electron transport chain on the inner mitochondrial membrane. As electrons pass along the " +
-      "chain, protons are pumped across the membrane, creating a gradient that drives ATP " +
-      "synthase in a process called oxidative phosphorylation. Oxygen acts as the final electron " +
-      "acceptor and combines with protons to form water. Altogether, aerobic respiration can " +
-      "yield roughly 30 to 32 ATP per molecule of glucose, far more than fermentation, which " +
-      "regenerates NAD+ without oxygen but produces only the 2 ATP from glycolysis.",
-  },
-  {
-    id: "4",
-    term:
-      "Ribulose-1,5-bisphosphate carboxylase/oxygenase (RuBisCO), the enzyme that catalyzes the " +
-      "first major step of carbon fixation in the Calvin cycle by attaching carbon dioxide to " +
-      "ribulose-1,5-bisphosphate, and which is widely considered the most abundant protein on " +
-      "Earth because photosynthetic organisms make so much of it to compensate for its slow " +
-      "catalytic rate and its tendency to react with oxygen instead of carbon dioxide during " +
-      "photorespiration, a wasteful side reaction that releases previously fixed carbon",
-    definition: "Enzyme that fixes carbon dioxide in photosynthesis",
-  },
-  { id: "5", term: "", definition: "Site of protein synthesis in the cell" },
-  { id: "6", term: "   ", definition: "Protein that speeds up a chemical reaction" },
-  { id: "7", term: "Homeostasis", definition: "Maintenance of a stable internal environment" },
-];
 
 // What Undo restores: the remaining cards in order, plus which side was showing.
 type Snapshot = { remaining: Card[]; showingTerm: boolean };
@@ -90,8 +51,21 @@ function undo(session: Session): Session {
 }
 
 export default function StudyScreen() {
-  const [session, setSession] = useState(() => startSession(SAMPLE_CARDS));
-  const total = SAMPLE_CARDS.length;
+  const { id } = useLocalSearchParams<{ id: string }>();
+  const { getDeck } = useDecks();
+  const deck = getDeck(id);
+
+  // The deck store saves the back of a card as 'answer'; this screen calls it 'definition'.
+  const [session, setSession] = useState(() =>
+    startSession(
+      (deck?.cards ?? []).map((card) => ({
+        id: String(card.id),
+        term: card.term,
+        definition: card.answer,
+      })),
+    ),
+  );
+  const total = deck?.cards.length ?? 0;
   const known = total - session.remaining.length;
   const current = session.remaining[0];
 
@@ -102,6 +76,8 @@ export default function StudyScreen() {
     if (router.canGoBack()) router.back();
     else router.replace("/");
   };
+
+  if (!deck) return <Text>Deck not found</Text>;
 
   return (
     <SafeAreaView style={styles.screen}>
@@ -248,7 +224,7 @@ function IconButton({ label, icon, onPress, disabled }: IconButtonProps) {
         disabled && styles.iconButtonDisabled,
       ]}
     >
-      <SymbolView name={icon} size={22} tintColor="#9E9E9E" />
+      <SymbolView name={icon} size={22} tintColor="#000" />
     </Pressable>
   );
 }
@@ -257,7 +233,6 @@ function IconButton({ label, icon, onPress, disabled }: IconButtonProps) {
 const styles = StyleSheet.create({
   screen: {
     flex: 1,
-    backgroundColor: "#FFFFFF",
     paddingHorizontal: 24,
   },
   header: {
@@ -266,8 +241,8 @@ const styles = StyleSheet.create({
   },
   exitButton: {
     borderWidth: 1,
-    borderColor: "#BDBDBD",
-    borderRadius: 999,
+    borderColor: "#000",
+    borderRadius: 48,
     paddingHorizontal: 12,
     paddingVertical: 10,
   },
@@ -301,7 +276,7 @@ const styles = StyleSheet.create({
   progressFill: {
     height: "100%",
     borderRadius: 999,
-    backgroundColor: "#808080",
+    backgroundColor: "#000",
   },
   cardSlot: {
     width: "100%",
@@ -316,7 +291,7 @@ const styles = StyleSheet.create({
     padding: 24,
     borderRadius: 8,
     borderWidth: 1,
-    borderColor: "#BDBDBD",
+    borderColor: "#000",
   },
   doneText: {
     color: "#000000",
@@ -340,7 +315,7 @@ const styles = StyleSheet.create({
     justifyContent: "center",
     borderRadius: 23,
     borderWidth: 1,
-    borderColor: "#BDBDBD",
+    borderColor: "#000",
   },
   iconButtonPressed: {
     backgroundColor: "#F2F2F2",
