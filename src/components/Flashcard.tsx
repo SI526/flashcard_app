@@ -1,3 +1,4 @@
+import { SymbolView } from "expo-symbols";
 import { useEffect, useRef, useState } from "react";
 import { Pressable, type ScrollView as RNScrollView, StyleSheet, Text } from "react-native";
 import { ScrollView } from "react-native-gesture-handler";
@@ -11,6 +12,8 @@ import { scheduleOnRN } from "react-native-worklets";
 type FlashcardProps = {
   term: string;
   definition: string;
+  // Shows an edit button in the top-right corner when provided.
+  onEdit?: () => void;
   // Optional controlled mode: lets a practice session remember which side was
   // showing (e.g. so Undo can restore it). Omit both to let the card manage itself.
   showingTerm?: boolean;
@@ -32,6 +35,7 @@ const MISSING_TERM_TEXT = "This card doesn’t have a term yet.";
 export default function Flashcard({
   term,
   definition,
+  onEdit,
   showingTerm,
   onFlip,
 }: FlashcardProps) {
@@ -90,11 +94,25 @@ export default function Flashcard({
           accessibilityLabel={isShowingTerm ? `Term: ${termText}` : `Definition: ${definition}`}
           accessibilityHint="Flips the card to its other side"
           onPress={flip}
-          style={({ pressed }) => [styles.face, pressed && styles.pressed]}
+          style={({ pressed }) => [
+            styles.face,
+            onEdit && styles.faceWithEdit,
+            pressed && styles.pressed,
+          ]}
         >
           <Text style={styles.text}>{renderedShowingTerm ? termText : definition}</Text>
         </Pressable>
       </ScrollView>
+      {onEdit && (
+        <Pressable
+          role="button"
+          accessibilityLabel="Edit card"
+          onPress={onEdit}
+          style={({ pressed }) => [styles.editButton, pressed && styles.editButtonPressed]}
+        >
+          <SymbolView name={{ ios: "pencil", android: "edit", web: "edit" }} size={18} tintColor="#000" />
+        </Pressable>
+      )}
     </Animated.View>
   );
 }
@@ -127,8 +145,28 @@ const styles = StyleSheet.create({
     justifyContent: "center",
     padding: 24,
   },
+  // Keeps the text clear of the edit button.
+  faceWithEdit: {
+    paddingTop: 56,
+  },
   pressed: {
     opacity: 0.7,
+  },
+  editButton: {
+    position: "absolute",
+    top: 10,
+    right: 10,
+    width: 36,
+    height: 36,
+    alignItems: "center",
+    justifyContent: "center",
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: "#000",
+    backgroundColor: "#FFFFFF",
+  },
+  editButtonPressed: {
+    backgroundColor: "#F2F2F2",
   },
   text: {
     color: "#000000",
