@@ -2,8 +2,14 @@ import Flashcard from "@/components/Flashcard";
 import { useDecks } from "@/store/decks";
 import { router, useLocalSearchParams } from "expo-router";
 import { SymbolView, type SymbolViewProps } from "expo-symbols";
-import { useState } from "react";
-import { Pressable, StyleSheet, Text, useWindowDimensions, View } from "react-native";
+import { useEffect, useState } from "react";
+import {
+  Pressable,
+  StyleSheet,
+  Text,
+  useWindowDimensions,
+  View,
+} from "react-native";
 import { Gesture, GestureDetector } from "react-native-gesture-handler";
 import Animated, {
   useAnimatedStyle,
@@ -35,8 +41,13 @@ function choose(session: Session, remaining: Card[]): Session {
 // definition-side up, since `choose` resets the side and the card remounts.
 function practiceAgain(session: Session): Session {
   const [current, ...rest] = session.remaining;
-  const index = rest.length === 0 ? 0 : 1 + Math.floor(Math.random() * rest.length);
-  return choose(session, [...rest.slice(0, index), current, ...rest.slice(index)]);
+  const index =
+    rest.length === 0 ? 0 : 1 + Math.floor(Math.random() * rest.length);
+  return choose(session, [
+    ...rest.slice(0, index),
+    current,
+    ...rest.slice(index),
+  ]);
 }
 
 // "Check": the current card is known, so drop it for the rest of the session.
@@ -77,6 +88,13 @@ export default function StudyScreen() {
     else router.replace("/");
   };
 
+  // Every card is known: go to the completed page, keeping the same deck id.
+  useEffect(() => {
+    if (total > 0 && !current) {
+      router.replace({ pathname: "/complete", params: { id } });
+    }
+  }, [total, current, id]);
+
   if (!deck) return <Text>Deck not found</Text>;
 
   return (
@@ -97,7 +115,12 @@ export default function StudyScreen() {
             {known}/{total}
           </Text>
           <View style={styles.progressTrack}>
-            <View style={[styles.progressFill, { width: `${(known / total) * 100}%` }]} />
+            <View
+              style={[
+                styles.progressFill,
+                { width: `${(known / total) * 100}%` },
+              ]}
+            />
           </View>
         </View>
 
@@ -135,7 +158,11 @@ export default function StudyScreen() {
           </View>
           <IconButton
             label="Undo"
-            icon={{ ios: "arrow.counterclockwise", android: "replay", web: "replay" }}
+            icon={{
+              ios: "arrow.counterclockwise",
+              android: "replay",
+              web: "replay",
+            }}
             onPress={() => setSession(undo)}
             disabled={session.history.length === 0}
           />
@@ -159,7 +186,13 @@ type SwipeableCardProps = {
 
 // Drag the card left to practice it again or right to mark it known. Short
 // drags spring back; taps still reach the card so it can flip.
-function SwipeableCard({ card, showingTerm, onFlip, onSwipeLeft, onSwipeRight }: SwipeableCardProps) {
+function SwipeableCard({
+  card,
+  showingTerm,
+  onFlip,
+  onSwipeLeft,
+  onSwipeRight,
+}: SwipeableCardProps) {
   const { width } = useWindowDimensions();
   const translateX = useSharedValue(0);
 
@@ -173,14 +206,20 @@ function SwipeableCard({ card, showingTerm, onFlip, onSwipeLeft, onSwipeRight }:
       const direction = Math.sign(e.translationX);
       const swiped =
         Math.abs(e.translationX) > SWIPE_DISTANCE ||
-        (Math.abs(e.velocityX) > SWIPE_VELOCITY && Math.sign(e.velocityX) === direction);
+        (Math.abs(e.velocityX) > SWIPE_VELOCITY &&
+          Math.sign(e.velocityX) === direction);
       if (!swiped) {
         translateX.value = withSpring(0);
         return;
       }
-      translateX.value = withTiming(direction * width, { duration: 200 }, (finished) => {
-        if (finished) scheduleOnRN(direction > 0 ? onSwipeRight : onSwipeLeft);
-      });
+      translateX.value = withTiming(
+        direction * width,
+        { duration: 200 },
+        (finished) => {
+          if (finished)
+            scheduleOnRN(direction > 0 ? onSwipeRight : onSwipeLeft);
+        },
+      );
     });
 
   const swipeStyle = useAnimatedStyle(() => ({
