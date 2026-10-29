@@ -21,6 +21,12 @@ type DeckStore = {
   isLoading: boolean; // true while the user's decks are loading from Supabase
   addDeck: (title: string, description: string, cards: NewCard[]) => Promise<string>;
   getDeck: (id: string) => Deck | undefined;
+  updateCard: (
+    deckId: string,
+    cardId: string,
+    changes: Partial<Omit<Card, "id">>,
+  ) => Promise<void>;
+  deleteCard: (deckId: string, cardId: string) => Promise<void>;
 };
 
 const DeckContext = createContext<DeckStore | null>(null);
@@ -108,8 +114,36 @@ export function DeckProvider({ children }: { children: ReactNode }) {
     return myDecks.find((deck) => deck.id === id);
   }
 
+  // Applies a change to one deck's cards in the list on screen.
+  function changeCards(deckId: string, change: (cards: Card[]) => Card[]) {
+    setDecks((previousDecks) =>
+      previousDecks.map((deck) =>
+        deck.id === deckId ? { ...deck, cards: change(deck.cards) } : deck,
+      ),
+    );
+  }
+
+  // Saves the change in Supabase first, then updates the screen.
+  // Throws an Error if saving fails, so Study can show "We couldn't save your changes."
+  async function updateCard(deckId: string, cardId: string, changes: Partial<Omit<Card, "id">>) {
+    const { error } = await supabase.from("cards").update(changes).eq("id", cardId);
+    if (error) throw new Error(error.message);
+    changeCards(deckId, (cards) =>
+      cards.map((card) => (card.id === cardId ? { ...card, ...changes } : card)),
+    );
+  }
+
+  // Deletes the card in Supabase first; if that fails, the card stays in the deck.
+  async function deleteCard(deckId: string, cardId: string) {
+    const { error } = await supabase.from("cards").delete().eq("id", cardId);
+    if (error) throw new Error(error.message);
+    changeCards(deckId, (cards) => cards.filter((card) => card.id !== cardId));
+  }
+
   return (
-    <DeckContext.Provider value={{ decks: myDecks, isLoading, addDeck, getDeck }}>
+    <DeckContext.Provider
+      value={{ decks: myDecks, isLoading, addDeck, getDeck, updateCard, deleteCard }}
+    >
       {children}
     </DeckContext.Provider>
   );

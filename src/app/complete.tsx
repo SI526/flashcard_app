@@ -7,7 +7,8 @@ import { SafeAreaView } from "react-native-safe-area-context";
 // Shown after every card in a study session is marked known.
 export default function Complete() {
   // The deck id comes from study.tsx, so this page knows which deck was finished.
-  const { id } = useLocalSearchParams<{ id: string }>();
+  // `lastCardId` is the card answered last in the study session.
+  const { id, lastCardId } = useLocalSearchParams<{ id: string; lastCardId?: string }>();
   const { getDeck } = useDecks();
   const deck = getDeck(id);
 
@@ -17,12 +18,26 @@ export default function Complete() {
     router.replace({ pathname: "/study", params: { id } });
   }
 
+  // Reopens Study on the last card answered, with the other cards still done.
+  // If there's no last card (e.g. it was deleted), it starts over like Restart.
+  function backToLastQuestion() {
+    router.replace({
+      pathname: "/study",
+      params: lastCardId ? { id, lastCardId } : { id },
+    });
+  }
+
   // Closes this page and goes back to the Create tab (instead of stacking a new one on top).
   function exit() {
     router.dismissTo("/create");
   }
 
   if (!deck) return <Text>Deck not found</Text>;
+
+  // Same names as the tracker in study.tsx. Every card is known on this page,
+  // so known equals total and the bar is full.
+  const total = deck.cards.length;
+  const known = total;
 
   return (
     <SafeAreaView style={styles.container}>
@@ -34,7 +49,23 @@ export default function Complete() {
 
       <View style={styles.body}>
         <View style={styles.middleContent}>
-          {/* TODO: Robin's progress tracker (10/10 + bar) goes here after merging. */}
+          <View
+            style={styles.progress}
+            accessible
+            accessibilityLabel={`${known} of ${total} cards known`}
+          >
+            <Text style={styles.progressText}>
+              {known}/{total}
+            </Text>
+            <View style={styles.progressTrack}>
+              <View
+                style={[
+                  styles.progressFill,
+                  { width: `${(known / total) * 100}%` },
+                ]}
+              />
+            </View>
+          </View>
           <Text style={styles.completeTitle}>You&apos;ve completed studying this deck!</Text>
         </View>
 
@@ -43,7 +74,7 @@ export default function Complete() {
             <Text style={styles.buttonText}>Restart Flashcards</Text>
           </Pressable>
 
-          <Pressable onPress={restart} style={styles.backButton}>
+          <Pressable onPress={backToLastQuestion} style={styles.backButton}>
             <Text style={styles.backText}>Back to last question</Text>
           </Pressable>
         </View>
@@ -80,6 +111,35 @@ const styles = StyleSheet.create({
     maxWidth: 342, // Figma's 342, but can shrink on narrow phones
     alignItems: "center",
     gap: 48,
+  },
+  progress: {
+    // Layout
+    alignSelf: "stretch",
+    alignItems: "center",
+    gap: 16,
+  },
+  progressText: {
+    // Typography
+    color: "#131927",
+    fontFamily: "Inter_400Regular",
+    fontSize: 14,
+    lineHeight: 20,
+  },
+  progressTrack: {
+    // Layout
+    alignSelf: "stretch",
+    height: 8,
+    // Style
+    borderRadius: 999, // fully rounded ends
+    backgroundColor: "#D9D9D9", // same gray track as study.tsx
+    overflow: "hidden",
+  },
+  progressFill: {
+    // Layout
+    height: "100%",
+    // Style
+    borderRadius: 999,
+    backgroundColor: ORANGE,
   },
   completeTitle: {
     // Typography (Figma Text Font/H4)
