@@ -3,7 +3,8 @@ import { supabase } from "@/lib/supabase";
 import { useAuth } from "@/store/auth";
 
 // Ids are strings now because the database creates them (UUIDs).
-export type Card = { id: string; term: string; answer: string };
+// `starred`: the user marked it as a key term (see "Study starred").
+export type Card = { id: string; term: string; answer: string; starred: boolean };
 
 export type Deck = {
   id: string;
@@ -27,6 +28,7 @@ type DeckStore = {
     changes: Partial<Omit<Card, "id">>,
   ) => Promise<void>;
   deleteCard: (deckId: string, cardId: string) => Promise<void>;
+  setStarred: (deckId: string, cardId: string, starred: boolean) => Promise<void>;
 };
 
 const DeckContext = createContext<DeckStore | null>(null);
@@ -48,7 +50,7 @@ export function DeckProvider({ children }: { children: ReactNode }) {
 
     supabase
       .from("decks")
-      .select("id, user_id, title, description, cards(id, term, answer, position)")
+      .select("id, user_id, title, description, cards(id, term, answer, starred, position)")
       .order("created_at")
       .order("position", { referencedTable: "cards" })
       .then(({ data, error }) => {
@@ -65,6 +67,7 @@ export function DeckProvider({ children }: { children: ReactNode }) {
                 id: card.id,
                 term: card.term,
                 answer: card.answer,
+                starred: card.starred,
               })),
             })),
           );
@@ -95,7 +98,7 @@ export function DeckProvider({ children }: { children: ReactNode }) {
           position: index,
         })),
       )
-      .select("id, term, answer");
+      .select("id, term, answer, starred");
     if (cardsError) {
       // Don't leave a deck with no cards behind.
       await supabase.from("decks").delete().eq("id", deck.id);
@@ -140,9 +143,25 @@ export function DeckProvider({ children }: { children: ReactNode }) {
     changeCards(deckId, (cards) => cards.filter((card) => card.id !== cardId));
   }
 
+  // Stars and unstars a card. The screen updates right away so the star feels
+  // instant; if saving fails, it goes back to how it was and this throws, so the
+  // screen can show "We couldn't save your change."
+  async function setStarred(deckId: string, cardId: string, starred: boolean) {
+    const mark = (value: boolean) =>
+      changeCards(deckId, (cards) =>
+        cards.map((card) => (card.id === cardId ? { ...card, starred: value } : card)),
+      );
+    mark(starred);
+    const { error } = await supabase.from("cards").update({ starred }).eq("id", cardId);
+    if (error) {
+      mark(!starred);
+      throw new Error(error.message);
+    }
+  }
+
   return (
     <DeckContext.Provider
-      value={{ decks: myDecks, isLoading, addDeck, getDeck, updateCard, deleteCard }}
+      value={{ decks: myDecks, isLoading, addDeck, getDeck, updateCard, deleteCard, setStarred }}
     >
       {children}
     </DeckContext.Provider>

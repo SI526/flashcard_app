@@ -1,21 +1,32 @@
+import CelebrationToast from "@/components/CelebrationToast";
+import PeachBackground from "@/components/PeachBackground";
 import { ORANGE } from "@/constants/theme";
 import { useDecks } from "@/store/decks";
 import { router, useLocalSearchParams } from "expo-router";
-import { Pressable, StyleSheet, Text, View } from "react-native";
+import { useState } from "react";
+import { Pressable, ScrollView, StyleSheet, Text, View } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 
-// Shown after every card in a study session is marked known.
+// Shown after every card in a study session is marked known. Matches the
+// session-complete screen in the designers' Figma Make prototype: a celebration
+// toast with the mascot, then a summary card.
 export default function Complete() {
   // The deck id comes from study.tsx, so this page knows which deck was finished.
   // `lastCardId` is the card answered last in the study session.
-  const { id, lastCardId } = useLocalSearchParams<{ id: string; lastCardId?: string }>();
+  // `mode` is "starred" after a "Study starred" session.
+  const { id, lastCardId, mode } = useLocalSearchParams<{
+    id: string;
+    lastCardId?: string;
+    mode?: string;
+  }>();
   const { getDeck } = useDecks();
   const deck = getDeck(id);
+  const [celebrating, setCelebrating] = useState(true);
 
   // Replacing this page with a new Study screen starts the session over from card 1.
-  // Passing the same id keeps the same deck.
+  // Passing the same id keeps the same deck; `restarted` shows "Session restarted".
   function restart() {
-    router.replace({ pathname: "/study", params: { id } });
+    router.replace({ pathname: "/study", params: { id, restarted: "1" } });
   }
 
   // Reopens Study on the last card answered, with the other cards still done.
@@ -32,172 +43,286 @@ export default function Complete() {
     router.dismissTo("/create");
   }
 
+  // A new starred session, with whichever cards are starred now.
+  function studyStarredAgain() {
+    router.replace({ pathname: "/study", params: { id, mode: "starred" } });
+  }
+
+  // Back to the deck page, under this one if it's still there.
+  function backToDeck() {
+    router.dismissTo({ pathname: "/preview", params: { id } });
+  }
+
   if (!deck) return <Text>Deck not found</Text>;
 
-  // Same names as the tracker in study.tsx. Every card is known on this page,
-  // so known equals total and the bar is full.
+  if (mode === "starred") {
+    const starredCount = deck.cards.filter((card) => card.starred).length;
+    return (
+      <PeachBackground>
+        <SafeAreaView style={styles.screen}>
+          <View style={styles.header}>
+            <Pressable role="button" onPress={exit} style={styles.exitButton}>
+              <Text style={styles.buttonText}>Exit</Text>
+            </Pressable>
+          </View>
+
+          <ScrollView contentContainerStyle={styles.body}>
+            {celebrating && (
+              <CelebrationToast
+                message="Session complete! Nice work!"
+                onDismiss={() => setCelebrating(false)}
+              />
+            )}
+
+            <View style={styles.card}>
+              <Text style={styles.eyebrow}>Starred terms</Text>
+              <Text role="heading" style={styles.title}>
+                You’ve reviewed your starred terms!
+              </Text>
+              <Text style={styles.text}>Your stars are saved for next time.</Text>
+
+              <Pressable
+                role="button"
+                onPress={studyStarredAgain}
+                disabled={starredCount === 0}
+                style={({ pressed }) => [
+                  styles.primaryButton,
+                  styles.firstButton,
+                  pressed && styles.pressed,
+                  starredCount === 0 && styles.disabled,
+                ]}
+              >
+                <Text style={styles.buttonText}>Study starred again</Text>
+              </Pressable>
+              {starredCount === 0 && (
+                <Text style={styles.guidance}>
+                  Star terms on the deck page to create a focused study session.
+                </Text>
+              )}
+
+              <Pressable
+                role="button"
+                onPress={backToDeck}
+                style={({ pressed }) => [styles.secondaryButton, pressed && styles.pressed]}
+              >
+                <Text style={styles.secondaryButtonText}>Back to deck</Text>
+              </Pressable>
+            </View>
+          </ScrollView>
+        </SafeAreaView>
+      </PeachBackground>
+    );
+  }
+
+  // A session only ends once every card is marked known.
   const total = deck.cards.length;
   const known = total;
 
   return (
-    <SafeAreaView style={styles.container}>
-      <View style={styles.header}>
-        <Pressable onPress={exit} style={styles.exitButton}>
-          <Text style={styles.buttonText}>Exit</Text>
-        </Pressable>
-      </View>
+    <PeachBackground>
+      <SafeAreaView style={styles.screen}>
+        <View style={styles.header}>
+          <Pressable role="button" onPress={exit} style={styles.exitButton}>
+            <Text style={styles.buttonText}>Exit</Text>
+          </Pressable>
+        </View>
 
-      <View style={styles.body}>
-        <View style={styles.middleContent}>
-          <View
-            style={styles.progress}
-            accessible
-            accessibilityLabel={`${known} of ${total} cards known`}
-          >
-            <Text style={styles.progressText}>
-              {known}/{total}
+        <ScrollView contentContainerStyle={styles.body}>
+          {celebrating && (
+            <CelebrationToast
+              message="Session complete! Nice work!"
+              onDismiss={() => setCelebrating(false)}
+            />
+          )}
+
+          <View style={styles.card}>
+            <Text style={styles.eyebrow}>Study session</Text>
+            <Text role="heading" style={styles.title}>
+              You finished all {total} {total === 1 ? "card" : "cards"}
             </Text>
-            <View style={styles.progressTrack}>
-              <View
-                style={[
-                  styles.progressFill,
-                  { width: `${(known / total) * 100}%` },
-                ]}
-              />
+            <Text style={styles.text}>
+              Your progress is saved. Take a moment to enjoy the win.
+            </Text>
+
+            <View
+              style={styles.score}
+              accessible
+              accessibilityLabel={`${known} ${known === 1 ? "card" : "cards"} known`}
+            >
+              <Text style={styles.scoreNumber}>{known}</Text>
+              <Text style={styles.scoreLabel}>{known === 1 ? "card" : "cards"} known</Text>
             </View>
+
+            <Pressable
+              role="button"
+              onPress={restart}
+              style={({ pressed }) => [styles.primaryButton, pressed && styles.pressed]}
+            >
+              <Text style={styles.buttonText}>Start a new session</Text>
+            </Pressable>
+
+            <Pressable
+              role="button"
+              onPress={backToLastQuestion}
+              style={({ pressed }) => [styles.backButton, pressed && styles.pressed]}
+            >
+              <Text style={styles.backText}>Back to last question</Text>
+            </Pressable>
           </View>
-          <Text style={styles.completeTitle}>You&apos;ve completed studying this deck!</Text>
-        </View>
-
-        <View style={styles.actions}>
-          <Pressable onPress={restart} style={styles.restartButton}>
-            <Text style={styles.buttonText}>Restart Flashcards</Text>
-          </Pressable>
-
-          <Pressable onPress={backToLastQuestion} style={styles.backButton}>
-            <Text style={styles.backText}>Back to last question</Text>
-          </Pressable>
-        </View>
-      </View>
-    </SafeAreaView>
+        </ScrollView>
+      </SafeAreaView>
+    </PeachBackground>
   );
 }
 
 const styles = StyleSheet.create({
-  container: {
-    // Layout
+  screen: {
     flex: 1,
-    // Style
-    backgroundColor: "#FFFFFF",
   },
   header: {
-    // Layout: a 109-wide box in the top-right; the padding pushes Exit 24 in from the edges
-    alignSelf: "flex-end",
-    width: 109,
+    // Same spot as Finish on the Study page.
+    alignItems: "flex-end",
     paddingTop: 24,
-    paddingRight: 24,
-  },
-  body: {
-    // Layout: fills the rest of the screen and centers the content in it
-    flex: 1,
-    alignItems: "center",
-    justifyContent: "center",
-    gap: 116, // space between the title and the buttons, measured from the mockup
     paddingHorizontal: 24,
   },
-  middleContent: {
-    // Layout
-    width: "100%",
-    maxWidth: 342, // Figma's 342, but can shrink on narrow phones
+  exitButton: {
+    width: 85,
+    height: 40,
+    paddingVertical: 12,
+    paddingHorizontal: 16,
+    justifyContent: "center",
     alignItems: "center",
-    gap: 48,
-  },
-  progress: {
-    // Layout
-    alignSelf: "stretch",
-    alignItems: "center",
-    gap: 16,
-  },
-  progressText: {
-    // Typography
-    color: "#131927",
-    fontFamily: "Inter_400Regular",
-    fontSize: 14,
-    lineHeight: 20,
-  },
-  progressTrack: {
-    // Layout
-    alignSelf: "stretch",
-    height: 8,
-    // Style
-    borderRadius: 999, // fully rounded ends
-    backgroundColor: "#D9D9D9", // same gray track as study.tsx
-    overflow: "hidden",
-  },
-  progressFill: {
-    // Layout
-    height: "100%",
-    // Style
-    borderRadius: 999,
+    borderRadius: 12,
     backgroundColor: ORANGE,
   },
-  completeTitle: {
-    // Typography (Figma Text Font/H4)
+  // Toast and card, centered in the space below the header. Scrolls on short screens.
+  body: {
+    flexGrow: 1,
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 20,
+    paddingHorizontal: 20,
+    paddingVertical: 28,
+  },
+  card: {
+    width: "100%",
+    maxWidth: 490,
+    alignItems: "center",
+    paddingHorizontal: 32,
+    paddingTop: 44,
+    paddingBottom: 32,
+    borderRadius: 28,
+    borderWidth: 1,
+    borderColor: "#F2D5BB",
+    backgroundColor: "rgba(255, 255, 255, 0.9)",
+    boxShadow: "0 24px 80px rgba(101, 46, 8, 0.1)",
+  },
+  eyebrow: {
+    color: "#A14505",
+    fontFamily: "Inter_500Medium",
+    fontSize: 11,
+    lineHeight: 14,
+    letterSpacing: 1.1,
+    textTransform: "uppercase",
+  },
+  title: {
+    marginTop: 10,
     color: "#131927",
     textAlign: "center",
     fontFamily: "Inter_600SemiBold",
     fontSize: 28,
-    lineHeight: 34,
+    lineHeight: 32,
   },
-  actions: {
-    // Layout: buttons stretch to this 176 width
-    width: 176,
+  text: {
+    marginTop: 14,
+    color: "#646A75",
+    textAlign: "center",
+    fontFamily: "Inter_400Regular",
+    fontSize: 14,
+    lineHeight: 21,
+  },
+  score: {
+    width: 150,
+    marginVertical: 28,
+    padding: 18,
     alignItems: "center",
-    gap: 24,
+    borderRadius: 18,
+    backgroundColor: "#FFF2E6",
   },
-  exitButton: {
-    // Layout
-    height: 40,
-    paddingVertical: 12,
-    paddingHorizontal: 16,
+  scoreNumber: {
+    color: "#8E3B03",
+    fontFamily: "Inter_600SemiBold",
+    fontSize: 34,
+    lineHeight: 40,
+  },
+  scoreLabel: {
+    color: "#8E3B03",
+    fontFamily: "Inter_400Regular",
+    fontSize: 11,
+    lineHeight: 14,
+  },
+  primaryButton: {
+    minHeight: 48,
+    paddingHorizontal: 24,
     justifyContent: "center",
     alignItems: "center",
-    alignSelf: "stretch",
-    // Style
-    borderRadius: 12,
-    backgroundColor: ORANGE,
-  },
-  restartButton: {
-    // Layout
-    height: 40,
-    paddingVertical: 12,
-    paddingHorizontal: 16,
-    justifyContent: "center",
-    alignItems: "center",
-    alignSelf: "stretch",
-    // Style
     borderRadius: 12,
     backgroundColor: ORANGE,
   },
   buttonText: {
-    // Typography (shared by Exit and Restart Flashcards)
     color: "#FFFFFF",
     textAlign: "center",
     fontFamily: "Inter_600SemiBold",
     fontSize: 14,
     lineHeight: 16,
   },
+  // Not in the prototype; kept from the earlier Complete page.
   backButton: {
-    // Layout
-    alignSelf: "stretch",
+    marginTop: 16,
+    paddingVertical: 8,
   },
   backText: {
-    // Typography
     color: ORANGE,
     textAlign: "center",
     fontFamily: "Inter_500Medium",
     fontSize: 12,
     lineHeight: 16,
     textTransform: "uppercase",
+  },
+  pressed: {
+    opacity: 0.8,
+  },
+  disabled: {
+    opacity: 0.4,
+  },
+  // Starred version: no score box, so the buttons need their own space.
+  firstButton: {
+    marginTop: 28,
+  },
+  guidance: {
+    marginTop: 8,
+    color: "#646A75",
+    textAlign: "center",
+    fontFamily: "Inter_400Regular",
+    fontSize: 12,
+    lineHeight: 16,
+  },
+  secondaryButton: {
+    minHeight: 48,
+    marginTop: 12,
+    paddingHorizontal: 24,
+    justifyContent: "center",
+    alignItems: "center",
+    borderRadius: 12,
+    borderWidth: 1.5,
+    borderColor: ORANGE,
+    backgroundColor: "#FFFFFF",
+  },
+  secondaryButtonText: {
+    color: ORANGE,
+    textAlign: "center",
+    fontFamily: "Inter_600SemiBold",
+    fontSize: 14,
+    lineHeight: 16,
   },
 });

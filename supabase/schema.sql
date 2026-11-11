@@ -25,6 +25,11 @@ create table if not exists public.cards (
   created_at timestamptz not null default now()
 );
 
+-- "Star key terms": the user marked this card as important. Stars belong to the
+-- card, so they show the same on the deck page and while studying.
+-- (A separate statement so databases made before this column existed get it too.)
+alter table public.cards add column if not exists starred boolean not null default false;
+
 -- ─── Access ─────────────────────────────────────────────────────────────
 
 -- We turned off "automatically expose new tables", so logged-in users need
