@@ -1,7 +1,8 @@
+import StarButton from "@/components/StarButton";
 import { ORANGE, WHITE } from "@/constants/theme";
 import { SymbolView } from "expo-symbols";
 import { useEffect, useRef, useState } from "react";
-import { Pressable, type ScrollView as RNScrollView, StyleSheet, Text } from "react-native";
+import { Pressable, type ScrollView as RNScrollView, StyleSheet, Text, View } from "react-native";
 import { ScrollView } from "react-native-gesture-handler";
 import Animated, {
   useAnimatedStyle,
@@ -19,6 +20,12 @@ type FlashcardProps = {
   // showing (e.g. so Undo can restore it). Omit both to let the card manage itself.
   showingTerm?: boolean;
   onFlip?: (showingTerm: boolean) => void;
+  // Ignores taps, e.g. while the card is sliding away.
+  disabled?: boolean;
+  // Shows a star button in the top-right corner when onToggleStar is provided.
+  // Starring never flips the card.
+  starred?: boolean;
+  onToggleStar?: () => void;
 };
 
 // Each half of the flip (turning edge-on, then turning back face-up).
@@ -26,10 +33,11 @@ const HALF_FLIP_MS = 150;
 
 const MISSING_TERM_TEXT = "This card doesn’t have a term yet.";
 
-// A single practice card. The definition is on the front, the term on the back,
+// A single practice card. The term is on the front, the definition on the back,
 // and only one side is visible at a time. Click/tap flips it; on web, Space or
 // Enter flips it while focused (react-native-web handles keys for role="button").
-// To reset a new card to its definition side, render it with a new `key`.
+// Taps during a flip are ignored, so repeated taps never stack up.
+// To reset a new card to its term side, render it with a new `key`.
 //
 // Text too long for the card scrolls inside it (drag, mouse wheel, or arrow
 // keys while focused). A scroll cancels the press, so it never flips the card.
@@ -39,8 +47,11 @@ export default function Flashcard({
   onEdit,
   showingTerm,
   onFlip,
+  disabled,
+  starred = false,
+  onToggleStar,
 }: FlashcardProps) {
-  const [internalShowingTerm, setInternalShowingTerm] = useState(false);
+  const [internalShowingTerm, setInternalShowingTerm] = useState(true);
   const isControlled = showingTerm !== undefined;
   const isShowingTerm = isControlled ? showingTerm : internalShowingTerm;
 
@@ -48,7 +59,13 @@ export default function Flashcard({
   // while the card is edge-on, halfway through the flip animation.
   const [renderedShowingTerm, setRenderedShowingTerm] = useState(isShowingTerm);
   const rotation = useSharedValue(0);
+  // True from a tap until the card is face-up again.
+  const flipping = useRef(false);
   const scrollRef = useRef<RNScrollView>(null);
+
+  function finishFlip() {
+    flipping.current = false;
+  }
 
   useEffect(() => {
     if (renderedShowingTerm === isShowingTerm) {
@@ -65,7 +82,9 @@ export default function Flashcard({
   }, [isShowingTerm]);
 
   useEffect(() => {
-    rotation.set(withTiming(0, { duration: HALF_FLIP_MS }));
+    rotation.set(withTiming(0, { duration: HALF_FLIP_MS }, () => {
+      scheduleOnRN(finishFlip);
+    }));
   }, [renderedShowingTerm, rotation]);
 
   // Each side starts scrolled to the top.
@@ -80,6 +99,8 @@ export default function Flashcard({
   }));
 
   const flip = () => {
+    if (disabled || flipping.current) return;
+    flipping.current = true;
     const next = !isShowingTerm;
     if (!isControlled) setInternalShowingTerm(next);
     onFlip?.(next);
@@ -97,13 +118,26 @@ export default function Flashcard({
           onPress={flip}
           style={({ pressed }) => [
             styles.face,
-            onEdit && styles.faceWithEdit,
+            (onEdit || onToggleStar) && styles.faceWithEdit,
             pressed && styles.pressed,
           ]}
         >
           <Text style={styles.text}>{renderedShowingTerm ? termText : definition}</Text>
         </Pressable>
       </ScrollView>
+      {/* Which side this is, and how to flip it. They swap with the text, halfway
+          through the flip. Screen readers get this from the press's label and hint. */}
+      <Text aria-hidden pointerEvents="none" style={styles.sideLabel}>
+        {renderedShowingTerm ? "Term" : "Definition"}
+      </Text>
+      <Text aria-hidden pointerEvents="none" style={styles.hint}>
+        {renderedShowingTerm ? "Tap card to flip" : "Tap card to flip back"}
+      </Text>
+      {onToggleStar && (
+        <View style={[styles.starSlot, !onEdit && styles.starSlotAlone]}>
+          <StarButton starred={starred} term={termText} onPress={onToggleStar} boxed />
+        </View>
+      )}
       {onEdit && (
         <Pressable
           role="button"
@@ -140,11 +174,13 @@ const styles = StyleSheet.create({
   scrollContent: {
     flexGrow: 1,
   },
+  // The vertical padding keeps the text clear of the side label and the hint.
   face: {
     flexGrow: 1,
     alignItems: "center",
     justifyContent: "center",
-    padding: 24,
+    paddingVertical: 48,
+    paddingHorizontal: 24,
   },
   // Keeps the text clear of the edit button.
   faceWithEdit: {
@@ -152,6 +188,38 @@ const styles = StyleSheet.create({
   },
   pressed: {
     opacity: 0.7,
+  },
+  // "TERM" / "DEFINITION" in the top-left corner (Sprint 3 mockup).
+  sideLabel: {
+    position: "absolute",
+    top: 20,
+    left: 22,
+    color: "#8B909A",
+    fontFamily: "Inter_500Medium",
+    fontSize: 10,
+    lineHeight: 12,
+    letterSpacing: 0.8,
+    textTransform: "uppercase",
+  },
+  hint: {
+    position: "absolute",
+    bottom: 18,
+    left: 0,
+    right: 0,
+    color: "#8B909A",
+    textAlign: "center",
+    fontFamily: "Inter_500Medium",
+    fontSize: 10,
+    lineHeight: 12,
+  },
+  // Just left of the edit button (or in the corner without one).
+  starSlot: {
+    position: "absolute",
+    top: 10,
+    right: 54,
+  },
+  starSlotAlone: {
+    right: 10,
   },
   editButton: {
     position: "absolute",

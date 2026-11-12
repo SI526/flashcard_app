@@ -1,19 +1,21 @@
-import PageBackground from "@/components/PageBackground";
 import BreakRemindersDialog from "@/components/BreakRemindersDialog";
 import BreakTimeDialog from "@/components/BreakTimeDialog";
-import { useBreakReminders } from "@/hooks/useBreakReminders";
 import CardEditor from "@/components/CardEditor";
-import { ChevronRightIcon, GearIcon } from "@/components/Icons";
-import { useAuth } from "@/store/auth";
-import { ERROR_RED, ORANGE, TEXT_BLACK, TEXT_GREY, WHITE } from "@/constants/theme";
+import { ORANGE, TEXT_BLACK, TEXT_GREY, WHITE } from "@/constants/theme";
 import Flashcard from "@/components/Flashcard";
+import { ChevronRightIcon, GearIcon } from "@/components/Icons";
+import PageBackground from "@/components/PageBackground";
+import { useBreakReminders } from "@/hooks/useBreakReminders";
+import { STAR_ERROR, useStarToggle } from "@/hooks/useStarToggle";
+import { useAuth } from "@/store/auth";
 import { type Card, useDecks } from "@/store/decks";
 import { type SavedSession, useSessions } from "@/store/sessions";
 import { useStreaks } from "@/store/streaks";
 import { router, useLocalSearchParams } from "expo-router";
 import { SymbolView, type SymbolViewProps } from "expo-symbols";
-import { useEffect, useRef, useState } from "react";
+import { type ReactNode, useEffect, useRef, useState } from "react";
 import {
+  AccessibilityInfo,
   ActivityIndicator,
   KeyboardAvoidingView,
   Modal,
@@ -26,31 +28,45 @@ import {
 } from "react-native";
 import { Gesture, GestureDetector } from "react-native-gesture-handler";
 import Animated, {
+  Easing,
+  interpolate,
+  type SharedValue,
   useAnimatedStyle,
+  useReducedMotion,
   useSharedValue,
   withSpring,
   withTiming,
 } from "react-native-reanimated";
-import { SafeAreaView } from "react-native-safe-area-context";
+import { SafeAreaView, useSafeAreaInsets } from "react-native-safe-area-context";
 import { scheduleOnRN } from "react-native-worklets";
 
 // The session tracks cards by id and reads their content from the saved deck,
 // so edits made while studying show up everywhere, even after an Undo.
-// What Undo restores: the remaining card ids in order, plus which side was showing.
-type Snapshot = { remaining: string[]; showingTerm: boolean };
+// What Undo restores: the remaining card ids in order, which side was showing,
+// and which cards are marked "Still learning".
+type Snapshot = { remaining: string[]; showingTerm: boolean; learning: string[] };
 type Session = Snapshot & { history: Snapshot[] };
 
+
+// Colors for "Still learning" and "Know", from the Sprint 3 mockup.
+const LEARNING_COLOR = "#832523";
+const KNOWN_COLOR = "#256533";
 
 const SAVE_ERROR = "We couldn’t save your changes. Please try again.";
 
 function startSession(cardIds: string[]): Session {
-  return { remaining: cardIds, showingTerm: true, history: [] };
+  return { remaining: cardIds, showingTerm: true, learning: [], history: [] };
 }
 
-// Records a practice choice. The next card always starts term-side up.
-function choose(session: Session, remaining: string[]): Session {
+// Records a practice choice. The next card always starts term-side up, with
+// its definition hidden.
+function choose(
+  session: Session,
+  remaining: string[],
+  learning: string[] = session.learning,
+): Session {
   const { history, ...snapshot } = session;
-  return { remaining, showingTerm: true, history: [...history, snapshot] };
+  return { remaining, showingTerm: true, learning, history: [...history, snapshot] };
 }
 
 // "X": randomly reinsert the current card into the remaining cards, but never
@@ -60,16 +76,18 @@ function practiceAgain(session: Session): Session {
   const [current, ...rest] = session.remaining;
   const index =
     rest.length === 0 ? 0 : 1 + Math.floor(Math.random() * rest.length);
-  return choose(session, [
-    ...rest.slice(0, index),
-    current,
-    ...rest.slice(index),
-  ]);
+  return choose(
+    session,
+    [...rest.slice(0, index), current, ...rest.slice(index)],
+    session.learning.includes(current) ? session.learning : [...session.learning, current],
+  );
 }
 
 // "Check": the current card is known, so drop it for the rest of the session.
+// It no longer counts as "Still learning".
 function markKnown(session: Session): Session {
-  return choose(session, session.remaining.slice(1));
+  const [current, ...rest] = session.remaining;
+  return choose(session, rest, session.learning.filter((id) => id !== current));
 }
 
 // "Shuffle cards": put the remaining cards in a random order for this session
@@ -97,6 +115,7 @@ function removeCard(session: Session, cardId: string): Session {
   const without = (snapshot: Snapshot) => ({
     ...snapshot,
     remaining: snapshot.remaining.filter((id) => id !== cardId),
+    learning: snapshot.learning.filter((id) => id !== cardId),
   });
   return { ...without(session), showingTerm: true, history: session.history.map(without) };
 }
@@ -118,6 +137,42 @@ function undo(session: Session): Session {
   return { ...previous, history: session.history.slice(0, -1) };
 }
 
+// Actions that animate. While one plays, every other control is ignored, so
+// repeated taps can't stack animations, skip cards or record a choice twice.
+type Action = "learning" | "known" | "shuffle" | "undo";
+
+// Short text shown above the card after an action. It's also the only
+// feedback when the device asks for reduced motion.
+type Feedback = { id: number; text: string; tone: "neutral" | "learning" | "known" };
+
+const FEEDBACK_TEXT = {
+  learning: "Still learning",
+  known: "Know",
+  shuffle: "Cards shuffled",
+  undo: "Previous card",
+  restart: "Session restarted",
+} as const;
+const FEEDBACK_MS = 1200;
+// After the last card of a starred session is flipped: time to read its
+// definition and see 100% before the Complete page.
+const STARRED_DONE_DELAY_MS = 1500;
+
+function makeFeedback(kind: keyof typeof FEEDBACK_TEXT): Feedback {
+  return {
+    id: Date.now(),
+    text: FEEDBACK_TEXT[kind],
+    tone: kind === "learning" || kind === "known" ? kind : "neutral",
+  };
+}
+
+// Durations and easings from the designers' Figma Make prototype.
+const SORT_MS = 380;
+const SORT_EASING = Easing.bezier(0.4, 0, 0.6, 1);
+const UNDO_MS = 480;
+const UNDO_EASING = Easing.bezier(0.2, 0.75, 0.25, 1);
+const SHUFFLE_MS = 680;
+const SHUFFLE_EASING = Easing.bezier(0.22, 0.61, 0.36, 1);
+
 // Waits for the decks and saved sessions to finish loading (only takes a moment right
 // after logging in), so a saved session is never missed and then saved over.
 export default function StudyScreen() {
@@ -137,32 +192,65 @@ export default function StudyScreen() {
 
 // The study session itself.
 function StudySession() {
-  // `lastCardId` is only set when coming from the Complete page's "Back to last question".
-  const { id, lastCardId } = useLocalSearchParams<{ id: string; lastCardId?: string }>();
+  // `lastCardId` is only set when coming from the Complete page's "Back to last question",
+  // and `restarted` when coming from its "Start a new session".
+  // `mode` is "starred" for "Study starred": only the starred cards.
+  const { id, lastCardId, restarted, mode } = useLocalSearchParams<{
+    id: string;
+    lastCardId?: string;
+    restarted?: string;
+    mode?: string;
+  }>();
+  const starredOnly = mode === "starred";
   const { getDeck, updateCard, deleteCard, updateStatus } = useDecks();
   const deck = getDeck(id);
+  const insets = useSafeAreaInsets();
+  // Figma: 50 from the top of the screen. On phones with a taller status bar, it
+  // moves down just enough to stay clear of the clock and battery.
+  const screenTop = { paddingTop: Math.max(50, insets.top) };
+  const { toggle: toggleStar, failed: starFailed } = useStarToggle(id);
   const { recordStudyDay } = useStreaks();
   const { getSavedSession, saveSession, clearSession } = useSessions();
+  // Only a full-deck session saves its place and changes the deck's status.
+  // "Back to last question" is a one-card replay of a finished deck, and a
+  // starred session is a side session, so neither one touches the full-deck progress.
+  const tracksProgress = !lastCardId && !starredOnly;
+  // Follows the device setting. When on, actions happen instantly and only the
+  // text feedback confirms them.
+  const reduceMotion = useReducedMotion();
 
+  // The cards in this session, fixed when it starts. In a starred session,
+  // starring or unstarring cards changes the deck for next time but never this list.
+  const [sessionCardIds, setSessionCardIds] = useState(() =>
+    (deck?.cards ?? [])
+      .filter((card) => !starredOnly || card.starred)
+      .map((card) => card.id),
+  );
   const [session, setSession] = useState(() => {
-    const cardIds = (deck?.cards ?? []).map((card) => card.id);
     // Back to last question: only that card is left, so the others stay done.
-    if (lastCardId && cardIds.includes(lastCardId)) return startSession([lastCardId]);
+    if (lastCardId && sessionCardIds.includes(lastCardId)) return startSession([lastCardId]);
+    if (starredOnly) return startSession(sessionCardIds);
     // Pick up where they left off, if this deck has a saved session.
-    return startSession(resumeOrder(cardIds, getSavedSession(id)));
+    return startSession(resumeOrder(sessionCardIds, getSavedSession(id)));
   });
+  // Progress: the cards whose definition has been revealed at least once this
+  // session. Kept outside the session so Undo, shuffling, starring and X/check
+  // never change it. Cards already done (Back to last question, or a resumed
+  // session) start out counted.
+  const [revealed, setRevealed] = useState<string[]>(() =>
+    sessionCardIds.filter((cardId) => !session.remaining.includes(cardId)),
+  );
 
   // Save the user's place whenever the remaining cards change (a ✓, ✗, swipe, shuffle,
   // undo, or deleted card). Once every card is known, the deck is "Reviewed" and the
-  // saved place is forgotten. "Back to last question" is a one-card replay of a
-  // finished deck, so it never saves or changes the status.
+  // saved place is forgotten. Only full-deck sessions do this (see tracksProgress).
   // Starts as the opening order, so just opening a deck doesn't save anything; if a
   // resumed session is already finished (null), the first run finishes it.
   const lastSavedRemaining = useRef<string[] | null>(
     session.remaining.length === 0 ? null : session.remaining,
   );
   useEffect(() => {
-    if (!deck || lastCardId) return;
+    if (!deck || !tracksProgress) return;
     if (session.remaining === lastSavedRemaining.current) return;
     lastSavedRemaining.current = session.remaining;
     if (session.remaining.length === 0) {
@@ -177,7 +265,7 @@ function StudySession() {
         cardIds: deck.cards.map((card) => card.id),
       });
     }
-  }, [deck, lastCardId, session.remaining, saveSession, clearSession, updateStatus]);
+  }, [deck, tracksProgress, session.remaining, saveSession, clearSession, updateStatus]);
   // The unsaved definition while the current card is in editing mode.
   const [draft, setDraft] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
@@ -190,9 +278,20 @@ function StudySession() {
     showingSettings || confirmingDelete,
   );
 
+  // The ref blocks a second tap in the same frame; the state re-renders the card.
+  const busy = useRef(false);
+  const [action, setAction] = useState<Action | null>(null);
+  // Coming from "Restart Flashcards", the session opens with that confirmation.
+  const [feedback, setFeedback] = useState<Feedback | null>(() =>
+    restarted ? makeFeedback("restart") : null,
+  );
+  const shuffleProgress = useSharedValue(0);
+
   const cards = deck?.cards ?? [];
-  const total = cards.length;
-  const known = total - session.remaining.length;
+  const total = sessionCardIds.length;
+  const viewed = revealed.length;
+  const knownCount = total - session.remaining.length;
+  const learningCount = session.learning.length;
   const current = cards.find((card) => card.id === session.remaining[0]);
   const editing = draft !== null;
   const definitionMissing = draft !== null && draft.trim() === "";
@@ -201,25 +300,111 @@ function StudySession() {
   // "Reviewed" deck being studied again. (It becomes "Reviewed" once every card is
   // known; see the save effect above.) Just opening a deck doesn't count.
   const markInProgress = () => {
-    if (!deck || lastCardId || deck.status === "in_progress") return;
+    if (!deck || !tracksProgress || deck.status === "in_progress") return;
     // Studying keeps going even if saving the status fails.
     updateStatus(deck.id, "in_progress").catch(() => {});
   };
 
-  const handlePracticeAgain = () => {
-    markInProgress();
-    setSession(practiceAgain);
-  };
-  const handleMarkKnown = () => {
-    // The last card goes straight to "Reviewed" instead (no In progress in between).
-    if (session.remaining.length > 1) markInProgress();
-    setSession(markKnown);
+  const showFeedback = (kind: keyof typeof FEEDBACK_TEXT) => {
+    setFeedback(makeFeedback(kind));
   };
 
-  // Closes the study screen and goes to Your Library (the place is saved, so
-  // Start studying picks up from here later).
+  // Hides each message after a moment. Native screen readers also hear it;
+  // web ones read the role="status" pill instead.
+  useEffect(() => {
+    if (!feedback) return;
+    if (Platform.OS !== "web") AccessibilityInfo.announceForAccessibility(feedback.text);
+    const timeout = setTimeout(() => setFeedback(null), FEEDBACK_MS);
+    return () => clearTimeout(timeout);
+  }, [feedback]);
+
+  const begin = (next: Action) => {
+    if (busy.current) return false;
+    busy.current = true;
+    setAction(next);
+    showFeedback(next);
+    return true;
+  };
+
+  const finish = () => {
+    busy.current = false;
+    setAction(null);
+  };
+
+  // X / check / swipe. The card slides off first; the choice is recorded once
+  // it's gone, so on the last card the animation ends before the Complete page.
+  const sort = (kind: "learning" | "known") => {
+    if (!current || editing || !begin(kind)) return;
+    if (reduceMotion) commitSort(kind);
+  };
+
+  const commitSort = (kind: "learning" | "known") => {
+    // The last card goes straight to "Reviewed" instead (no In progress in between).
+    if (kind === "learning" || session.remaining.length > 1) markInProgress();
+    setSession(kind === "known" ? markKnown : practiceAgain);
+    finish();
+  };
+
+  const handleShuffle = () => {
+    if (session.remaining.length < 2 || editing || !begin("shuffle")) return;
+    if (reduceMotion) {
+      setSession(shuffle);
+      finish();
+      return;
+    }
+    shuffleProgress.set(0);
+    shuffleProgress.set(
+      withTiming(1, { duration: SHUFFLE_MS, easing: SHUFFLE_EASING }, () => {
+        scheduleOnRN(finishShuffle);
+      }),
+    );
+  };
+
+  // The front ghost card now covers the card exactly, so swapping in the new
+  // first card underneath it doesn't show a jump.
+  const finishShuffle = () => {
+    setSession(shuffle);
+    shuffleProgress.set(0);
+    finish();
+  };
+
+  // The previous card slides back in from the left. Progress stays as it is.
+  const handleUndo = () => {
+    if (session.history.length === 0 || editing || !begin("undo")) return;
+    setSession(undo);
+    if (reduceMotion) finish();
+  };
+
+  const handleFlip = (showingTerm: boolean) => {
+    setSession((s) => ({ ...s, showingTerm }));
+    markInProgress();
+    // Any flip makes today a study day for the streak (only saved once a day).
+    recordStudyDay();
+    // Only the first reveal of each card's definition counts.
+    if (!showingTerm && current) {
+      const cardId = current.id;
+      setRevealed((ids) => (ids.includes(cardId) ? ids : [...ids, cardId]));
+    }
+  };
+
+  // Back one page (used by "Back to deck" when a starred session has no cards).
   const exit = () => {
+    if (router.canGoBack()) router.back();
+    else router.replace("/");
+  };
+
+  // Finish: closes the study screen and goes to Your Library (the place is saved,
+  // so Start Studying picks up from here later).
+  const finishStudying = () => {
     router.dismissTo("/library");
+  };
+
+  // Only leave for the Complete page once, even if both reasons below happen together.
+  const completed = useRef(false);
+  const complete = (params: Record<string, string>) => {
+    if (completed.current) return;
+    completed.current = true;
+    router.replace({ pathname: "/complete", params });
   };
 
   // Every card is known: go to the completed page, keeping the same deck id.
@@ -227,15 +412,23 @@ function StudySession() {
   const answeredLastId = session.history[session.history.length - 1]?.remaining[0];
   useEffect(() => {
     if (total > 0 && !current) {
-      router.replace({
-        pathname: "/complete",
-        params: answeredLastId ? { id, lastCardId: answeredLastId } : { id },
-      });
+      if (starredOnly) complete({ id, mode: "starred" });
+      else complete(answeredLastId ? { id, lastCardId: answeredLastId } : { id });
     }
-  }, [total, current, id, answeredLastId]);
+  }, [total, current, id, answeredLastId, starredOnly]);
+
+  // A starred session is done once every card in it has been flipped: progress
+  // shows 100%, and after a moment to read the last definition, the Complete
+  // page says "You've reviewed your starred terms!".
+  const allRevealed = total > 0 && viewed >= total;
+  useEffect(() => {
+    if (!starredOnly || !allRevealed) return;
+    const timeout = setTimeout(() => complete({ id, mode: "starred" }), STARRED_DONE_DELAY_MS);
+    return () => clearTimeout(timeout);
+  }, [starredOnly, allRevealed, id]);
 
   const startEditing = () => {
-    if (!current) return;
+    if (!current || busy.current) return;
     setDraft(current.answer);
     setSaveFailed(false);
   };
@@ -270,6 +463,8 @@ function StudySession() {
     try {
       await deleteCard(deck.id, cardId);
       setSession((s) => removeCard(s, cardId));
+      setSessionCardIds((ids) => ids.filter((sessionId) => sessionId !== cardId));
+      setRevealed((ids) => ids.filter((revealedId) => revealedId !== cardId));
       setDraft(null);
     } catch {
       setSaveFailed(true);
@@ -283,61 +478,65 @@ function StudySession() {
   if (total === 0) {
     return (
       <PageBackground>
-        <SafeAreaView style={styles.screen}>
+        <SafeAreaView edges={["bottom", "left", "right"]} style={[styles.screen, screenTop]}>
           <View style={styles.body}>
             <View style={styles.doneCard}>
-              <Text style={styles.doneText}>This deck is empty</Text>
+              <Text style={styles.doneText}>
+                {starredOnly ? "You don’t have any starred terms yet" : "This deck is empty"}
+              </Text>
             </View>
-            <TextButton label="Back to library" onPress={() => router.replace("/library")} />
+            {starredOnly ? (
+              <TextButton label="Back to deck" onPress={exit} />
+            ) : (
+              <TextButton label="Back to library" onPress={() => router.replace("/library")} />
+            )}
           </View>
         </SafeAreaView>
       </PageBackground>
     );
   }
 
+  const leaving = action === "learning" ? -1 : action === "known" ? 1 : 0;
+
   return (
     <PageBackground>
-      <SafeAreaView style={styles.screen}>
+      <SafeAreaView edges={["bottom", "left", "right"]} style={[styles.screen, screenTop]}>
         <View style={styles.header}>
-          {/* Settings: opens the study settings menu (Break reminders, etc.) */}
-          <Pressable
-            role="button"
-            accessibilityLabel="Study settings"
-            onPress={() => setShowingSettings(true)}
-            disabled={editing}
-            style={[styles.settingsButton, editing && styles.disabled]}
-          >
-            <GearIcon color={ORANGE} />
-          </Pressable>
-          <Pressable
-            role="button"
-            onPress={exit}
-            disabled={editing}
-            style={[styles.exitButton, editing && styles.disabled]}
-          >
-            <Text style={styles.exitText}>Exit</Text>
-          </Pressable>
+          <Text role="heading" numberOfLines={1} style={styles.deckTitle}>
+            {deck.title}
+          </Text>
+          {/* Settings and Finish, side by side on the right */}
+          <View style={styles.headerButtons}>
+            {/* Settings: opens the study settings menu (Break reminders, etc.) */}
+            <Pressable
+              role="button"
+              accessibilityLabel="Study settings"
+              onPress={() => setShowingSettings(true)}
+              disabled={editing}
+              style={[styles.settingsButton, editing && styles.disabled]}
+            >
+              <GearIcon color={ORANGE} />
+            </Pressable>
+            <Pressable
+              role="button"
+              onPress={finishStudying}
+              disabled={editing}
+              style={[styles.finishButton, editing && styles.disabled]}
+            >
+              <Text style={styles.finishText}>Finish</Text>
+            </Pressable>
+          </View>
         </View>
 
         <KeyboardAvoidingView
           style={[styles.body, editing && styles.bodyEditing]}
           behavior={Platform.OS === "ios" ? "padding" : undefined}
         >
-          <View
-            style={styles.progress}
-            accessible
-            accessibilityLabel={`${known} of ${total} cards known`}
-          >
-            <Text style={styles.progressText}>
-              {known}/{total}
-            </Text>
-            <View style={styles.progressTrack}>
-              <View
-                style={[
-                  styles.progressFill,
-                  { width: `${(known / total) * 100}%` },
-                ]}
-              />
+          <View style={styles.summary}>
+            <ProgressBar viewed={viewed} total={total} />
+            <View style={styles.counters}>
+              <Counter label="Still learning" count={learningCount} tone="learning" />
+              <Counter label="Know" count={knownCount} tone="known" />
             </View>
           </View>
 
@@ -370,59 +569,76 @@ function StudySession() {
               </View>
             </View>
           ) : current ? (
-            // Remount on every choice, undo or deletion, so the card resets its
-            // swipe position and appears with the side recorded in the session.
-            <SwipeableCard
-              key={`${session.history.length}-${current.id}`}
-              card={current}
-              showingTerm={session.showingTerm}
-              onFlip={(showingTerm) => {
-                setSession((s) => ({ ...s, showingTerm }));
-                markInProgress();
-                // Any flip makes today a study day for the streak (only saved once a day).
-                recordStudyDay();
-              }}
-              onEdit={startEditing}
-              onSwipeLeft={handlePracticeAgain}
-              onSwipeRight={handleMarkKnown}
-            />
+            <View style={styles.stage}>
+              {action === "shuffle" && <ShuffleGhost progress={shuffleProgress} layer="base" />}
+              {action === "shuffle" && <ShuffleGhost progress={shuffleProgress} layer="behind" />}
+              <ShufflingCard progress={shuffleProgress}>
+                {/* Remount on every choice, undo or deletion, so the card resets its
+                    position and appears with the side recorded in the session. */}
+                <SwipeableCard
+                  key={`${session.history.length}-${current.id}`}
+                  card={current}
+                  showingTerm={session.showingTerm}
+                  locked={action !== null}
+                  leaving={reduceMotion ? 0 : leaving}
+                  enterFromLeft={action === "undo" && !reduceMotion}
+                  onFlip={handleFlip}
+                  onEdit={startEditing}
+                  onSwipe={(direction) => sort(direction > 0 ? "known" : "learning")}
+                  onLeft={(direction) => commitSort(direction > 0 ? "known" : "learning")}
+                  onEntered={finish}
+                  onToggleStar={() => toggleStar(current)}
+                />
+              </ShufflingCard>
+              {action === "shuffle" && <ShuffleGhost progress={shuffleProgress} layer="front" />}
+            </View>
           ) : (
             <View style={styles.doneCard}>
               <Text style={styles.doneText}>You’ve reviewed all your cards!</Text>
             </View>
           )}
 
+          {/* X on the left, check on the right, matching the counters above;
+              shuffle and undo in the middle. */}
           <View style={styles.actions}>
-            <View style={styles.choiceButtons}>
-              <IconButton
-                label="Practice again"
-                icon={{ ios: "xmark", android: "close", web: "close" }}
-                onPress={handlePracticeAgain}
-                disabled={!current || editing}
-              />
-              <IconButton
-                label="Mark as known"
-                icon={{ ios: "checkmark", android: "check", web: "check" }}
-                onPress={handleMarkKnown}
-                disabled={!current || editing}
-              />
-            </View>
-            <View style={styles.choiceButtons}>
+            <IconButton
+              label="Still learning"
+              icon={{ ios: "xmark", android: "close", web: "close" }}
+              variant="learning"
+              onPress={() => sort("learning")}
+              disabled={!current || editing}
+            />
+            <View style={styles.middleButtons}>
               <IconButton
                 label="Shuffle cards"
                 icon={{ ios: "shuffle", android: "shuffle", web: "shuffle" }}
-                onPress={() => setSession(shuffle)}
+                onPress={handleShuffle}
                 disabled={session.remaining.length < 2 || editing}
               />
               <IconButton
                 label="Undo"
-                icon={{ ios: "arrow.counterclockwise", android: "replay", web: "replay" }}
-                onPress={() => setSession(undo)}
+                icon={{ ios: "arrow.uturn.backward", android: "undo", web: "undo" }}
+                onPress={handleUndo}
                 disabled={session.history.length === 0 || editing}
               />
             </View>
+            <IconButton
+              label="Know"
+              icon={{ ios: "checkmark", android: "check", web: "check" }}
+              variant="known"
+              onPress={() => sort("known")}
+              disabled={!current || editing}
+            />
           </View>
+
+          {starFailed && (
+            <Text role="alert" style={styles.errorText}>
+              {STAR_ERROR}
+            </Text>
+          )}
         </KeyboardAvoidingView>
+
+        {feedback && <FeedbackPill key={feedback.id} feedback={feedback} />}
 
         <DeleteConfirmation
           visible={confirmingDelete}
@@ -438,6 +654,166 @@ function StudySession() {
   );
 }
 
+// The fill grows smoothly when a new card's definition is revealed. Starred
+// sessions use the same "2/5 viewed", counting only the cards in the session.
+function ProgressBar({ viewed, total }: { viewed: number; total: number }) {
+  const percent = useSharedValue((viewed / total) * 100);
+
+  useEffect(() => {
+    percent.set(withTiming((viewed / total) * 100, { duration: 240 }));
+  }, [viewed, total, percent]);
+
+  const fillStyle = useAnimatedStyle(() => ({ width: `${percent.get()}%` }));
+
+  return (
+    <View
+      style={styles.progress}
+      accessible
+      accessibilityLabel={`${viewed} of ${total} cards viewed`}
+    >
+      <Text style={styles.progressText}>
+        {viewed}/{total} viewed
+      </Text>
+      <View style={styles.progressTrack}>
+        <Animated.View style={[styles.progressFill, fillStyle]} />
+      </View>
+    </View>
+  );
+}
+
+// A count in a small outlined box: "[0] Still learning" on the left,
+// "Know [0]" on the right.
+function Counter({
+  label,
+  count,
+  tone,
+}: {
+  label: string;
+  count: number;
+  tone: "learning" | "known";
+}) {
+  const color = tone === "learning" ? LEARNING_COLOR : KNOWN_COLOR;
+  const box = (
+    <View style={[styles.counterBox, { borderColor: color }]}>
+      <Text style={[styles.counterText, { color }]}>{count}</Text>
+    </View>
+  );
+  const text = <Text style={[styles.counterText, { color }]}>{label}</Text>;
+  return (
+    <View style={styles.counter} accessible accessibilityLabel={`${label}: ${count}`}>
+      {tone === "learning" ? (
+        <>
+          {box}
+          {text}
+        </>
+      ) : (
+        <>
+          {text}
+          {box}
+        </>
+      )}
+    </View>
+  );
+}
+
+// Pops in near the bottom of the screen, then the screen removes it after FEEDBACK_MS.
+function FeedbackPill({ feedback }: { feedback: Feedback }) {
+  const shown = useSharedValue(0);
+
+  useEffect(() => {
+    shown.set(withTiming(1, { duration: 180, easing: Easing.out(Easing.ease) }));
+  }, [shown]);
+
+  const style = useAnimatedStyle(() => ({
+    opacity: shown.get(),
+    transform: [
+      { translateY: (1 - shown.get()) * 6 },
+      { scale: 0.9 + shown.get() * 0.1 },
+    ],
+  }));
+
+  return (
+    <View style={styles.feedbackSlot} pointerEvents="none">
+      <Animated.View
+        role="status"
+        aria-live="polite"
+        style={[
+          styles.feedback,
+          feedback.tone === "learning" && styles.feedbackLearning,
+          feedback.tone === "known" && styles.feedbackKnown,
+          style,
+        ]}
+      >
+        <Text
+          style={[
+            styles.feedbackText,
+            feedback.tone === "learning" && styles.feedbackTextLearning,
+            feedback.tone === "known" && styles.feedbackTextKnown,
+          ]}
+        >
+          {feedback.text}
+        </Text>
+      </Animated.View>
+    </View>
+  );
+}
+
+// Shuffle: the current card nudges back while a blank card from behind the deck
+// swings out to the right and comes around to the front. Both blanks are the
+// same card; "behind" shows for the first part and "front" for the rest, which
+// avoids animating zIndex. "base" is a second card under the deck for depth.
+function ShufflingCard({
+  progress,
+  children,
+}: {
+  progress: SharedValue<number>;
+  children: ReactNode;
+}) {
+  const style = useAnimatedStyle(() => {
+    const p = progress.get();
+    return {
+      transform: [
+        { translateX: interpolate(p, [0, 0.52, 1], [0, -18, -10]) },
+        { scale: interpolate(p, [0, 0.52, 1], [1, 0.985, 0.965]) },
+        { rotate: `${interpolate(p, [0, 0.52, 1], [0, -1.5, -0.5])}deg` },
+      ],
+    };
+  });
+  return <Animated.View style={[styles.stageFill, style]}>{children}</Animated.View>;
+}
+
+function ShuffleGhost({
+  progress,
+  layer,
+}: {
+  progress: SharedValue<number>;
+  layer: "base" | "behind" | "front";
+}) {
+  const style = useAnimatedStyle(() => {
+    const p = progress.get();
+    if (layer === "base") {
+      return {
+        transform: [
+          { translateX: interpolate(p, [0, 0.55, 1], [9, 5, 0]) },
+          { translateY: interpolate(p, [0, 0.55, 1], [-8, -5, 0]) },
+          { scale: interpolate(p, [0, 0.55, 1], [0.97, 0.98, 1]) },
+        ],
+      };
+    }
+    const atFront = p >= 0.44;
+    return {
+      opacity: (layer === "front") === atFront ? 1 : 0,
+      transform: [
+        { translateX: interpolate(p, [0, 0.43, 0.72, 1], [13, 48, 16, 0]) },
+        { translateY: interpolate(p, [0, 0.43, 0.72, 1], [-11, 1, 0, 0]) },
+        { scale: interpolate(p, [0, 0.43, 0.72, 1], [0.955, 0.98, 1.005, 1]) },
+        { rotate: `${interpolate(p, [0, 0.43, 0.72, 1], [0, 3.5, 1, 0])}deg` },
+      ],
+    };
+  });
+  return <Animated.View pointerEvents="none" style={[styles.ghostCard, style]} />;
+}
+
 // How far (px) the card must be dragged to count as a swipe, unless flicked.
 const SWIPE_DISTANCE = 120;
 const SWIPE_VELOCITY = 800;
@@ -445,68 +821,108 @@ const SWIPE_VELOCITY = 800;
 type SwipeableCardProps = {
   card: Card;
   showingTerm: boolean;
+  // While true, the card can't be dragged or flipped.
+  locked: boolean;
+  // -1 or 1 slides the card off to that side, then calls onLeft.
+  leaving: -1 | 0 | 1;
+  // Read on mount only: slide in from the left (Undo), then call onEntered.
+  enterFromLeft: boolean;
   onFlip: (showingTerm: boolean) => void;
   onEdit: () => void;
-  onSwipeLeft: () => void;
-  onSwipeRight: () => void;
+  onSwipe: (direction: -1 | 1) => void;
+  onLeft: (direction: -1 | 1) => void;
+  onEntered: () => void;
+  onToggleStar: () => void;
 };
 
-// Drag the card left to practice it again or right to mark it known. Short
-// drags spring back; taps still reach the card so it can flip.
+// Drag the card left for "Still learning" or right for "Know"; the buttons do
+// the same thing. Short drags spring back; taps still reach the card so it can flip.
 function SwipeableCard({
   card,
   showingTerm,
+  locked,
+  leaving,
+  enterFromLeft,
   onFlip,
   onEdit,
-  onSwipeLeft,
-  onSwipeRight,
+  onSwipe,
+  onLeft,
+  onEntered,
+  onToggleStar,
 }: SwipeableCardProps) {
   const { width } = useWindowDimensions();
-  const translateX = useSharedValue(0);
+  const [startsOffscreen] = useState(enterFromLeft);
+  const translateX = useSharedValue(startsOffscreen ? -1.05 * width : 0);
+  const opacity = useSharedValue(startsOffscreen ? 0.45 : 1);
+
+  useEffect(() => {
+    if (!startsOffscreen) return;
+    opacity.set(withTiming(1, { duration: UNDO_MS, easing: UNDO_EASING }));
+    translateX.set(
+      withTiming(0, { duration: UNDO_MS, easing: UNDO_EASING }, () => {
+        scheduleOnRN(onEntered);
+      }),
+    );
+    // Only on mount.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  useEffect(() => {
+    if (leaving === 0) return;
+    const direction = leaving;
+    opacity.set(withTiming(0, { duration: SORT_MS, easing: SORT_EASING }));
+    translateX.set(
+      withTiming(direction * 1.15 * width, { duration: SORT_MS, easing: SORT_EASING }, () => {
+        scheduleOnRN(onLeft, direction);
+      }),
+    );
+    // Only when asked to leave.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [leaving]);
 
   const pan = Gesture.Pan()
+    .enabled(!locked)
     .activeOffsetX([-15, 15])
     .failOffsetY([-15, 15])
     .onUpdate((e) => {
-      translateX.value = e.translationX;
+      translateX.set(e.translationX);
     })
     .onEnd((e) => {
-      const direction = Math.sign(e.translationX);
+      const direction = e.translationX > 0 ? 1 : -1;
       const swiped =
         Math.abs(e.translationX) > SWIPE_DISTANCE ||
         (Math.abs(e.velocityX) > SWIPE_VELOCITY &&
           Math.sign(e.velocityX) === direction);
       if (!swiped) {
-        translateX.value = withSpring(0);
+        translateX.set(withSpring(0));
         return;
       }
-      translateX.value = withTiming(
-        direction * width,
-        { duration: 200 },
-        (finished) => {
-          if (finished)
-            scheduleOnRN(direction > 0 ? onSwipeRight : onSwipeLeft);
-        },
-      );
+      // The screen records the choice and sets `leaving`, which finishes the slide.
+      scheduleOnRN(onSwipe, direction);
     });
 
+  // Tilts up to 7° as the card reaches the edge of the screen.
   const swipeStyle = useAnimatedStyle(() => ({
+    opacity: opacity.get(),
     transform: [
-      { translateX: translateX.value },
-      { rotate: `${translateX.value / 20}deg` },
+      { translateX: translateX.get() },
+      { rotate: `${(translateX.get() / (1.15 * width)) * 7}deg` },
     ],
   }));
 
   // The deck store saves the back of a card as 'answer'; the card calls it 'definition'.
   return (
     <GestureDetector gesture={pan}>
-      <Animated.View style={[styles.cardSlot, swipeStyle]}>
+      <Animated.View style={[styles.stageFill, swipeStyle]}>
         <Flashcard
           term={card.term}
           definition={card.answer}
           onEdit={onEdit}
           showingTerm={showingTerm}
           onFlip={onFlip}
+          disabled={locked}
+          starred={card.starred}
+          onToggleStar={onToggleStar}
         />
       </Animated.View>
     </GestureDetector>
@@ -585,9 +1001,13 @@ type IconButtonProps = {
   icon: SymbolViewProps["name"];
   onPress: () => void;
   disabled?: boolean;
+  // "learning" is filled orange (X), "known" filled green (check);
+  // the default is outlined in orange (shuffle, undo).
+  variant?: "outline" | "learning" | "known";
 };
 
-function IconButton({ label, icon, onPress, disabled }: IconButtonProps) {
+function IconButton({ label, icon, onPress, disabled, variant = "outline" }: IconButtonProps) {
+  const filled = variant !== "outline";
   return (
     <Pressable
       role="button"
@@ -596,11 +1016,13 @@ function IconButton({ label, icon, onPress, disabled }: IconButtonProps) {
       disabled={disabled}
       style={({ pressed }) => [
         styles.iconButton,
-        pressed && styles.iconButtonPressed,
+        variant === "learning" && styles.iconButtonLearning,
+        variant === "known" && styles.iconButtonKnown,
+        pressed && (filled ? styles.iconButtonFilledPressed : styles.iconButtonPressed),
         disabled && styles.disabled,
       ]}
     >
-      <SymbolView name={icon} size={22} tintColor="#000" />
+      <SymbolView name={icon} size={22} tintColor={filled ? "#FFFFFF" : ORANGE} />
     </Pressable>
   );
 }
@@ -644,25 +1066,32 @@ function TextButton({ label, onPress, disabled, primary, destructive, wide }: Te
 
 // Matches the lo-fi wireframes (design/card-term.png, design/card-definition.png).
 const styles = StyleSheet.create({
-  // Spinner in the middle while decks and saved sessions load
+  // Centers the spinner while decks and saved sessions load.
   loading: {
     flex: 1,
     justifyContent: "center",
     alignItems: "center",
   },
   screen: {
+    // Layout (Figma: padding 50 24 0 24, gap 36). The top 50 is set in the
+    // component (screenTop) so it can stay clear of the status bar.
     flex: 1,
     paddingHorizontal: 24,
+    gap: 36, // between the header and the "n/N viewed" progress
   },
+  // Deck name on the left, settings + Finish on the right.
   header: {
-    // Layout: settings and Exit side by side, on the right
     flexDirection: "row",
-    justifyContent: "flex-end",
     alignItems: "center",
-    gap: 12, // between settings and Exit (estimated until the spec arrives)
-    paddingTop: 24, // same spot as Exit on the Complete page
+    justifyContent: "space-between",
+    gap: 16,
   },
-  // Square settings button next to Exit
+  // Settings and Finish side by side.
+  headerButtons: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 12, // between settings and Finish (estimated until the spec arrives)
+  },
   settingsButton: {
     // Layout
     height: 40,
@@ -674,8 +1103,6 @@ const styles = StyleSheet.create({
     borderWidth: 1.5,
     borderColor: ORANGE, // Primary-500
   },
-  // ─── Settings popup (basic styling until the design is done) ───
-  // Dark see-through layer, same as the other popups
   settingsOverlay: {
     flex: 1,
     justifyContent: "center",
@@ -691,7 +1118,6 @@ const styles = StyleSheet.create({
     backgroundColor: WHITE,
     boxShadow: "0 8px 32px 0 rgba(19, 25, 39, 0.19)",
   },
-  // One option, like the Preferences rows on Edit Profile
   settingsRow: {
     flexDirection: "row",
     justifyContent: "space-between",
@@ -711,23 +1137,27 @@ const styles = StyleSheet.create({
     fontSize: 14,
     lineHeight: 20,
   },
-  // "On" next to Break reminders, like Study reminders on Edit Profile
   settingsRowStatus: {
     color: ORANGE,
     fontFamily: "Inter_500Medium",
     fontSize: 14,
     lineHeight: 20,
   },
-  // "Off" is grey, so "On" in orange stands out
   settingsRowStatusOff: {
     color: TEXT_GREY,
   },
-  // Holds the Break reminders popup (it brings its own box styling)
   settingsDialog: {
     width: "100%",
   },
-  // Exit matches the Complete page's Exit button.
-  exitButton: {
+  deckTitle: {
+    flexShrink: 1,
+    color: "#131927",
+    fontFamily: "Inter_600SemiBold",
+    fontSize: 18,
+    lineHeight: 24,
+  },
+  // Same size and color as the Complete page's Exit button.
+  finishButton: {
     // Layout
     width: 85,
     height: 40,
@@ -739,39 +1169,73 @@ const styles = StyleSheet.create({
     borderRadius: 12,
     backgroundColor: ORANGE,
   },
-  exitText: {
+  finishText: {
     // Typography
-    color: WHITE,
+    color: "#FFFFFF",
     textAlign: "center",
     fontFamily: "Inter_600SemiBold",
     fontSize: 14,
     lineHeight: 16,
   },
+  // Progress, card and buttons, starting at the top under the header.
   body: {
     flex: 1,
     alignItems: "center",
-    justifyContent: "center",
-    gap: 46,
+    justifyContent: "flex-start",
+    gap: 32,
   },
   // Tighter, so the editor and its buttons fit on small screens.
   bodyEditing: {
     gap: 20,
   },
+  // Progress bar and counters, as wide as the card so the counters line up
+  // with its edges.
+  summary: {
+    width: "100%",
+    maxWidth: 480,
+    gap: 16,
+  },
   progress: {
-    width: "76%",
-    maxWidth: 360,
+    width: "100%",
+    alignItems: "center",
+    gap: 12,
+  },
+  progressText: {
+    color: "#131927",
+    textAlign: "center",
+    fontFamily: "Inter_400Regular",
+    fontSize: 14,
+    lineHeight: 20,
+  },
+  counters: {
+    flexDirection: "row",
+    justifyContent: "space-between",
+    alignItems: "center",
+  },
+  counter: {
+    flexDirection: "row",
     alignItems: "center",
     gap: 8,
   },
-  progressText: {
-    color: "#000000",
-    fontSize: 13,
+  counterBox: {
+    minWidth: 29,
+    height: 24,
+    paddingHorizontal: 6,
+    alignItems: "center",
+    justifyContent: "center",
+    borderRadius: 8,
+    borderWidth: 1,
+  },
+  counterText: {
+    fontFamily: "Inter_500Medium",
+    fontSize: 10,
+    lineHeight: 12,
   },
   progressTrack: {
     width: "100%",
-    height: 9,
+    height: 8,
     borderRadius: 999,
-    backgroundColor: "#D9D9D9",
+    backgroundColor: "#FFD3B3", // light peach (Sprint 3 mockup)
     overflow: "hidden",
   },
   progressFill: {
@@ -779,9 +1243,57 @@ const styles = StyleSheet.create({
     borderRadius: 999,
     backgroundColor: ORANGE,
   },
-  cardSlot: {
+  // Same size as the card, so the shuffle's ghost cards line up with it.
+  stage: {
     width: "100%",
+    maxWidth: 480,
+    aspectRatio: 345 / 330,
+  },
+  stageFill: {
+    ...StyleSheet.absoluteFill,
+  },
+  ghostCard: {
+    ...StyleSheet.absoluteFill,
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: "#E5C5A9",
+    backgroundColor: "#FFFFFF",
+  },
+  // Near the bottom of the screen, clear of the card and buttons.
+  feedbackSlot: {
+    position: "absolute",
+    left: 0,
+    right: 0,
+    bottom: 24,
     alignItems: "center",
+  },
+  feedback: {
+    minWidth: 116,
+    paddingVertical: 7,
+    paddingHorizontal: 14,
+    borderRadius: 999,
+    borderWidth: 1,
+    borderColor: "#E2C3A8",
+    backgroundColor: "#FFFFFF",
+  },
+  feedbackLearning: {
+    borderColor: "#E7AAA8",
+  },
+  feedbackKnown: {
+    borderColor: "#9CC9A6",
+  },
+  feedbackText: {
+    color: "#8E3B03",
+    textAlign: "center",
+    fontFamily: "Inter_600SemiBold",
+    fontSize: 12,
+    lineHeight: 16,
+  },
+  feedbackTextLearning: {
+    color: LEARNING_COLOR,
+  },
+  feedbackTextKnown: {
+    color: KNOWN_COLOR,
   },
   editor: {
     width: "100%",
@@ -793,7 +1305,7 @@ const styles = StyleSheet.create({
     gap: 12,
   },
   errorText: {
-    color: ERROR_RED,
+    color: "#C62828",
     fontSize: 13,
     textAlign: "center",
   },
@@ -818,22 +1330,34 @@ const styles = StyleSheet.create({
     maxWidth: 480,
     flexDirection: "row",
     justifyContent: "space-between",
+    alignItems: "center",
   },
-  choiceButtons: {
+  middleButtons: {
     flexDirection: "row",
-    gap: 12,
+    gap: 4,
   },
   iconButton: {
-    width: 46,
-    height: 46,
+    width: 48,
+    height: 48,
     alignItems: "center",
     justifyContent: "center",
-    borderRadius: 23,
-    borderWidth: 1,
-    borderColor: "#000",
+    borderRadius: 12,
+    borderWidth: 1.5,
+    borderColor: ORANGE,
+    backgroundColor: "#FFFFFF",
+  },
+  iconButtonLearning: {
+    backgroundColor: ORANGE,
+  },
+  iconButtonKnown: {
+    borderColor: KNOWN_COLOR,
+    backgroundColor: KNOWN_COLOR,
   },
   iconButtonPressed: {
-    backgroundColor: "#F2F2F2",
+    backgroundColor: "#FFF5EB",
+  },
+  iconButtonFilledPressed: {
+    opacity: 0.8,
   },
   disabled: {
     opacity: 0.4,
@@ -846,7 +1370,7 @@ const styles = StyleSheet.create({
     borderRadius: 8,
     paddingHorizontal: 16,
     paddingVertical: 10,
-    backgroundColor: WHITE,
+    backgroundColor: "#FFFFFF",
   },
   textButtonPrimary: {
     borderColor: ORANGE,
@@ -866,7 +1390,7 @@ const styles = StyleSheet.create({
     fontSize: 15,
   },
   textButtonTextPrimary: {
-    color: WHITE,
+    color: "#FFFFFF",
   },
   textButtonTextDestructive: {
     color: "#C62828",
@@ -884,7 +1408,7 @@ const styles = StyleSheet.create({
     gap: 12,
     padding: 24,
     borderRadius: 12,
-    backgroundColor: WHITE,
+    backgroundColor: "#FFFFFF",
   },
   dialogTitle: {
     color: "#000000",

@@ -25,6 +25,11 @@ create table if not exists public.cards (
   created_at timestamptz not null default now()
 );
 
+-- "Star key terms": the user marked this card as important. Stars belong to the
+-- card, so they show the same on the deck page and while studying.
+-- (A separate statement so databases made before this column existed get it too.)
+alter table public.cards add column if not exists starred boolean not null default false;
+
 -- How far the user got studying each deck, shown as a badge in the library.
 -- (alter table, so databases made before this column existed get it too)
 alter table public.decks

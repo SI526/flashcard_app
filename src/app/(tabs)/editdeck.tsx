@@ -63,7 +63,7 @@ export default function EditDeck() {
   function addNewCard() {
     setCards((previousCards) => [
       ...previousCards,
-      { id: `new-${Date.now()}`, term: "", answer: "" },
+      { id: `new-${Date.now()}`, term: "", answer: "", starred: false },
     ]);
   }
   function removeCard(cardId: string) {
