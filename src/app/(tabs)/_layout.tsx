@@ -1,42 +1,64 @@
-import { ORANGE } from "@/constants/theme";
+import { ORANGE, TEXT_GREY } from "@/constants/theme";
 import { HomeIcon, PlusIcon, ProfileIcon } from "@/components/Icons";
+import { askBeforeLeaving } from "@/utils/leaveGuard";
 import { Tabs } from "expo-router/js-tabs";
 import { PlatformPressable } from "expo-router/react-navigation";
 import type { ComponentProps } from "react";
 import { StyleSheet, View } from "react-native";
 
-const GRAY = "#9EA2AE";
-
 export default function TabsLayout() {
   return (
     <Tabs
       screenOptions={{
+        headerShown: false,
         tabBarShowLabel: false,
         tabBarActiveTintColor: ORANGE,
-        tabBarInactiveTintColor: GRAY,
+        tabBarInactiveTintColor: TEXT_GREY,
         tabBarStyle: styles.tabBar,
         tabBarButton: (props) => <TabButton {...props} />,
       }}
+      // Before switching tabs, let the current screen stop it if it has unsaved work
+      // (Create asks whether to discard an unfinished deck).
+      screenListeners={({ navigation, route }) => ({
+        tabPress: (event) => {
+          const state = navigation.getState();
+          const currentRoute = state.routes[state.index].name;
+          if (currentRoute === route.name) return;
+          const stopped = askBeforeLeaving(currentRoute, () => navigation.navigate(route.name));
+          if (stopped) event.preventDefault();
+        },
+      })}
     >
       <Tabs.Screen
         name="index"
         options={{
           title: "Home",
-          headerShown: false,
           tabBarIcon: ({ color }) => <HomeIcon color={color} />,
         }}
       />
       <Tabs.Screen
         name="create"
-        options={{ title: "Create Deck", tabBarIcon: ({ color }) => <PlusIcon color={color} /> }}
+        options={{
+          title: "Create Deck",
+          tabBarIcon: ({ color }) => <PlusIcon color={color} />,
+        }}
       />
       <Tabs.Screen
         name="profile"
-        options={{ title: "Profile", tabBarIcon: ({ color }) => <ProfileIcon color={color} /> }}
+        options={{
+          title: "Profile",
+          tabBarIcon: ({ color }) => <ProfileIcon color={color} />,
+        }}
       />
       {/* Hidden from the tab bar (href: null), but the tab bar still shows on these screens. */}
       <Tabs.Screen name="preview" options={{ title: "Preview Deck", href: null }} />
       <Tabs.Screen name="library" options={{ title: "Your Library", href: null }} />
+      <Tabs.Screen name="editdeck" options={{ title: "Edit Deck", href: null }} />
+      {/* No tab bar here: the back arrow is the way out, so unsaved-name checks always run. */}
+      <Tabs.Screen
+        name="editProfile"
+        options={{ title: "Edit Profile", href: null, tabBarStyle: { display: "none" } }}
+      />
     </Tabs>
   );
 }

@@ -5,11 +5,15 @@ import { useAuth } from "@/store/auth";
 // Ids are strings now because the database creates them (UUIDs).
 export type Card = { id: string; term: string; answer: string };
 
+// How far the user got studying a deck. Saved in Supabase, so it lasts after logging out.
+export type DeckStatus = "not_started" | "in_progress" | "reviewed";
+
 export type Deck = {
   id: string;
   userId: string;
   title: string;
   description: string;
+  status: DeckStatus;
   cards: Card[];
 };
 
@@ -21,6 +25,9 @@ type DeckStore = {
   isLoading: boolean; // true while the user's decks are loading from Supabase
   addDeck: (title: string, description: string, cards: NewCard[]) => Promise<string>;
   getDeck: (id: string) => Deck | undefined;
+  updateDeck: (deckId: string, changes: { title: string; description: string }) => Promise<void>;
+  updateStatus: (deckId: string, status: DeckStatus) => Promise<void>;
+  addCard: (deckId: string, card: NewCard) => Promise<string>;
   updateCard: (
     deckId: string,
     cardId: string,
@@ -48,7 +55,7 @@ export function DeckProvider({ children }: { children: ReactNode }) {
 
     supabase
       .from("decks")
-      .select("id, user_id, title, description, cards(id, term, answer, position)")
+      .select("id, user_id, title, description, status, cards(id, term, answer, position)")
       .order("created_at")
       .order("position", { referencedTable: "cards" })
       .then(({ data, error }) => {
@@ -61,6 +68,7 @@ export function DeckProvider({ children }: { children: ReactNode }) {
               userId: row.user_id,
               title: row.title,
               description: row.description,
+              status: row.status,
               cards: row.cards.map((card) => ({
                 id: card.id,
                 term: card.term,
@@ -105,7 +113,14 @@ export function DeckProvider({ children }: { children: ReactNode }) {
     // 3. Add it to the list on screen too, so Preview can show it right away.
     setDecks((previousDecks) => [
       ...previousDecks,
-      { id: deck.id, userId: deck.user_id, title, description, cards: savedCards },
+      {
+        id: deck.id,
+        userId: deck.user_id,
+        title,
+        description,
+        status: "not_started", // the database's default for a new deck
+        cards: savedCards,
+      },
     ]);
     return deck.id;
   }
@@ -121,6 +136,55 @@ export function DeckProvider({ children }: { children: ReactNode }) {
         deck.id === deckId ? { ...deck, cards: change(deck.cards) } : deck,
       ),
     );
+  }
+
+  // Saves a deck's new title and description in Supabase first, then updates the screen.
+  // Throws an Error if saving fails.
+  // Saves a deck's study status in Supabase first, then updates the screen.
+  // Throws an Error if saving fails.
+  async function updateStatus(deckId: string, status: DeckStatus) {
+    const { error } = await supabase.from("decks").update({ status }).eq("id", deckId);
+    if (error) throw new Error(error.message);
+    setDecks((previousDecks) =>
+      previousDecks.map((deck) => (deck.id === deckId ? { ...deck, status } : deck)),
+    );
+  }
+
+  async function updateDeck(deckId: string, changes: { title: string; description: string }) {
+    const { error } = await supabase.from("decks").update(changes).eq("id", deckId);
+    if (error) throw new Error(error.message);
+    setDecks((previousDecks) =>
+      previousDecks.map((deck) => (deck.id === deckId ? { ...deck, ...changes } : deck)),
+    );
+  }
+
+  // Saves a new card at the end of the deck, then returns its id.
+  // Throws an Error if saving fails.
+  async function addCard(deckId: string, card: NewCard) {
+    // Find the deck's last position. Counting cards could repeat one after a delete.
+    const { data: lastCard, error: lastCardError } = await supabase
+      .from("cards")
+      .select("position")
+      .eq("deck_id", deckId)
+      .order("position", { ascending: false })
+      .limit(1)
+      .maybeSingle();
+    if (lastCardError) throw new Error(lastCardError.message);
+
+    const { data: savedCard, error } = await supabase
+      .from("cards")
+      .insert({
+        deck_id: deckId,
+        term: card.term,
+        answer: card.answer,
+        position: lastCard ? lastCard.position + 1 : 0,
+      })
+      .select("id, term, answer")
+      .single();
+    if (error) throw new Error(error.message);
+
+    changeCards(deckId, (cards) => [...cards, savedCard]);
+    return savedCard.id;
   }
 
   // Saves the change in Supabase first, then updates the screen.
@@ -142,7 +206,17 @@ export function DeckProvider({ children }: { children: ReactNode }) {
 
   return (
     <DeckContext.Provider
-      value={{ decks: myDecks, isLoading, addDeck, getDeck, updateCard, deleteCard }}
+      value={{
+        decks: myDecks,
+        isLoading,
+        addDeck,
+        getDeck,
+        updateDeck,
+        updateStatus,
+        addCard,
+        updateCard,
+        deleteCard,
+      }}
     >
       {children}
     </DeckContext.Provider>

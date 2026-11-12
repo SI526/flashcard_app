@@ -25,17 +25,71 @@ create table if not exists public.cards (
   created_at timestamptz not null default now()
 );
 
+-- How far the user got studying each deck, shown as a badge in the library.
+-- (alter table, so databases made before this column existed get it too)
+alter table public.decks
+  add column if not exists status text not null default 'not_started'
+  check (status in ('not_started', 'in_progress', 'reviewed'));
+
+-- One row per day a user studied (flipped at least one card), for the study streak.
+-- `day` is the calendar date in the account's saved time zone. The primary key
+-- (user_id, day) means a day can only be saved once, however much they study.
+create table if not exists public.study_days (
+  user_id    uuid not null default auth.uid() references auth.users (id) on delete cascade,
+  day        date not null,
+  created_at timestamptz not null default now(),
+  primary key (user_id, day)
+);
+
+-- A study session saved partway through, so "Start studying" can resume it.
+-- One row per user per deck. `remaining` is the card ids still to study, in order
+-- (so a shuffled order is kept); the first one is the card they were on.
+-- `card_ids` is every card in the deck when it was saved, so cards added later
+-- can be told apart from cards already studied. Deleting the deck deletes this too.
+create table if not exists public.study_sessions (
+  user_id    uuid not null default auth.uid() references auth.users (id) on delete cascade,
+  deck_id    uuid not null references public.decks (id) on delete cascade,
+  remaining  jsonb not null,
+  card_ids   jsonb not null,
+  updated_at timestamptz not null default now(),
+  primary key (user_id, deck_id)
+);
+
 -- ─── Access ─────────────────────────────────────────────────────────────
 
 -- We turned off "automatically expose new tables", so logged-in users need
 -- explicit permission to reach these tables at all. Logged-out visitors get none.
 grant select, insert, update, delete on public.decks to authenticated;
 grant select, insert, update, delete on public.cards to authenticated;
+-- Study days are only ever added and read, never changed or deleted by the app.
+grant select, insert on public.study_days to authenticated;
+-- Saved sessions are added, updated as they study, and deleted when finished.
+grant select, insert, update, delete on public.study_sessions to authenticated;
 
 -- ─── Row level security: users only see their own data ──────────────────
 
 alter table public.decks enable row level security;
 alter table public.cards enable row level security;
+alter table public.study_days enable row level security;
+alter table public.study_sessions enable row level security;
+
+-- Saved sessions: you can only touch your own.
+drop policy if exists "Users manage their own study sessions" on public.study_sessions;
+create policy "Users manage their own study sessions"
+  on public.study_sessions
+  for all
+  to authenticated
+  using (user_id = (select auth.uid()))
+  with check (user_id = (select auth.uid()));
+
+-- Study days: you can only read or add days where user_id is you.
+drop policy if exists "Users manage their own study days" on public.study_days;
+create policy "Users manage their own study days"
+  on public.study_days
+  for all
+  to authenticated
+  using (user_id = (select auth.uid()))
+  with check (user_id = (select auth.uid()));
 
 -- Decks: you can only read, add, edit, or delete decks where user_id is you.
 -- (drop ... if exists first, so this file can be run again safely)

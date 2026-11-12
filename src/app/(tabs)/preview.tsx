@@ -1,4 +1,6 @@
-import { ORANGE } from "@/constants/theme";
+import PageBackground from "@/components/PageBackground";
+import StatusBadge from "@/components/StatusBadge";
+import { ORANGE, ORANGE_100, WHITE } from "@/constants/theme";
 import { useDecks } from "@/store/decks";
 import { router, useLocalSearchParams } from "expo-router";
 import { Pressable, ScrollView, StyleSheet, Text, View } from "react-native";
@@ -11,31 +13,40 @@ export default function Preview({}) {
   if (!deck) return <Text>Deck not found</Text>;
 
   return (
-    <ScrollView contentContainerStyle={ styles.container }>
-      <View style={styles.header}>
-        <View style={styles.deckInfo}>
-          <Text style={styles.deckTitle}>{deck.title}</Text>
-          <Text style={styles.deckDescription}>{deck.description}</Text>
+    <PageBackground>
+      <ScrollView contentContainerStyle={ styles.container }>
+        <View style={styles.header}>
+          {/* Title and description on the left, status badge on the right */}
+          <View style={styles.titleRow}>
+            <View style={styles.deckInfo}>
+              <Text style={styles.deckTitle}>{deck.title}</Text>
+              <Text style={styles.deckDescription}>{deck.description}</Text>
+            </View>
+            <StatusBadge status={deck.status} />
+          </View>
+          <Pressable
+            style={styles.startStudyButton}
+            onPress={() => router.push({ pathname: "/study", params: { id } })}
+          >
+            <Text style={styles.startStudyText}>Start Studying</Text>
+          </Pressable>
+        </View>
+        <View style={styles.cardList}>
+          {deck.cards.map((card) => (
+            <View key={card.id} style={styles.cards}>
+              <Text style={styles.term}>{card.term}</Text>
+              <Text style={styles.answer}>{card.answer}</Text>
+            </View>
+          ))}
         </View>
         <Pressable
-          style={styles.startStudyButton}
-          onPress={() => router.push({ pathname: "/study", params: { id } })}
+          style={styles.editButton}
+          onPress={() => router.push({ pathname: "/editdeck", params: { id } })}
         >
-          <Text style={styles.startStudyText}>Start Studying</Text>
+          <Text style={styles.editText}>Edit Deck</Text>
         </Pressable>
-      </View>
-      <View style={styles.cardList}>
-        {deck.cards.map((card) => (
-          <View key={card.id} style={styles.cards}>
-            <Text style={styles.term}>{card.term}</Text>
-            <Text style={styles.answer}>{card.answer}</Text>
-          </View>
-        ))}
-      </View>
-      <Pressable style={styles.editButton}>
-        <Text style={styles.editText}>Edit Deck</Text>
-      </Pressable>
-    </ScrollView>
+      </ScrollView>
+    </PageBackground>
   );
 }
 
@@ -43,29 +54,35 @@ const styles = StyleSheet.create({
   container: {
     flexGrow: 1, // not flex: 1, which would stop long decks from scrolling
     padding: 24,
-    backgroundColor: "#FFFFFF",
+    paddingTop: 84, // no header on this tab, so keep the content below the status bar
   },
-  // Wraps the title, description, and Start Studying button
+  // Wraps the title row and the Start Studying button
   header: {
     // Layout
-    width: "100%", // width: 265px → full width, capped at 265
-    maxWidth: 265,
-    flexDirection: "column",
     alignItems: "flex-start",
     gap: 16,
+  },
+  // Title + description on the left, status badge on the right
+  titleRow: {
+    // Layout
+    flexDirection: "row",
+    alignItems: "flex-start",
+    alignSelf: "stretch",
+    gap: 12,
   },
   // Wraps the title + description
   deckInfo: {
     // Layout
+    flex: 1, // takes the space left of the badge; long titles wrap
     flexDirection: "column",
     alignItems: "flex-start",
     gap: 12,
-    alignSelf: "stretch",
   },
   deckTitle: {
     // Layout
     alignSelf: "stretch",
     // Typography (Text Font/H4)
+    color: "#000",
     fontFamily: "Inter_600SemiBold", // font-family: Inter + font-weight: 600
     fontSize: 28,
     lineHeight: 34,
@@ -90,16 +107,16 @@ const styles = StyleSheet.create({
   },
   cards: {
     // Layout
+    alignSelf: "stretch",
     flexDirection: "column",
     alignItems: "flex-start",
-    gap: 24,
-    // flex: 1 0 0 left out: in a column it would stretch the card's height
-    padding: 12,
+    gap: 24, // between the term and definition
+    padding: 20,
     // Style
-    borderWidth: 1, // border: 1px solid #D2D5DB
-    borderColor: "#D2D5DB",
     borderRadius: 8,
-    backgroundColor: "#FFF",
+    borderWidth: 1,
+    borderColor: ORANGE_100,
+    backgroundColor: WHITE,
   },
   term: {
     // Layout
@@ -122,6 +139,7 @@ const styles = StyleSheet.create({
   startStudyButton: {
     // Layout
     alignSelf: "flex-start",
+    flexShrink: 0,
     height: 40,
     paddingVertical: 12, // padding: 12px 16px
     paddingHorizontal: 16,
@@ -133,7 +151,7 @@ const styles = StyleSheet.create({
   },
   startStudyText: {
     // Typography (Button Font/Medium)
-    color: "#FFFFFF",
+    color: WHITE,
     textAlign: "center",
     fontFamily: "Inter_600SemiBold", // font-family: Inter + font-weight: 600
     fontSize: 14,
@@ -144,7 +162,7 @@ const styles = StyleSheet.create({
   },
   editText: {
     // Typography (Button Font/Medium)
-    color: ORANGE,
+    color: WHITE,
     textAlign: "center",
     fontFamily: "Inter_600SemiBold", // font-family: Inter + font-weight: 600
     fontSize: 14,
@@ -161,7 +179,6 @@ const styles = StyleSheet.create({
     marginTop: 15,
     // Style
     borderRadius: 12,
-    borderWidth: 1.5, // border: 1.5px solid #C45100
-    borderColor: ORANGE,
+    backgroundColor: ORANGE,
   },
 });

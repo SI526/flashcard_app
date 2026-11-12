@@ -1,3 +1,4 @@
+import { WHITE } from "@/constants/theme";
 import { TrashIcon } from "@/components/Icons";
 import { Pressable, StyleSheet, Text, TextInput, View } from "react-native";
 
@@ -57,7 +58,7 @@ const styles = StyleSheet.create({
     borderRadius: 8,
     borderWidth: 2,
     borderColor: "#000",
-    backgroundColor: "#FFFFFF",
+    backgroundColor: WHITE,
   },
   banner: {
     color: "#000000",

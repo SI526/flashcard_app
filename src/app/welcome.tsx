@@ -1,19 +1,22 @@
-import { ORANGE } from "@/constants/theme";
+import PageBackground from "@/components/PageBackground";
+import { ORANGE, WHITE } from "@/constants/theme";
 import { router } from "expo-router";
 import { Pressable, ScrollView, StyleSheet, Text } from "react-native";
 
 
 export default function Welcome({}) {
     return (
-        <ScrollView contentContainerStyle={styles.container}>
-        <Text style={styles.appTitle}>Welcome{"\n"}to{"\n"}BrainHop</Text>
-        <Pressable style={styles.loginButton} onPress={() => router.push("/login")}>
-            <Text style={styles.loginText}>Log in</Text>
-        </Pressable>
-        <Pressable style={styles.createAccountButton} onPress={() => router.push("/signup")}>
-            <Text style={styles.createAccountText}>Create an account</Text>
-        </Pressable>
-        </ScrollView>
+      <PageBackground>
+          <ScrollView contentContainerStyle={styles.container}>
+          <Text style={styles.appTitle}>Welcome{"\n"}to{"\n"}BrainHop</Text>
+          <Pressable style={styles.loginButton} onPress={() => router.push("/login")}>
+              <Text style={styles.loginText}>Log in</Text>
+          </Pressable>
+          <Pressable style={styles.createAccountButton} onPress={() => router.push("/signup")}>
+              <Text style={styles.createAccountText}>Create an account</Text>
+          </Pressable>
+          </ScrollView>
+      </PageBackground>
     );
 }
 
@@ -23,7 +26,6 @@ const styles = StyleSheet.create({
     justifyContent: "center",
     padding: 24,
     paddingBottom: 120,
-    backgroundColor: "#FFFFFF",
   },
   appTitle: {
     color: ORANGE,
@@ -41,7 +43,7 @@ const styles = StyleSheet.create({
     boxShadow: "0 6px 16px rgba(201, 76, 0, 0.25)",
   },
   loginText: {
-    color: "#FFFFFF",
+    color: WHITE,
     fontSize: 15,
     fontWeight: "700",
   },
@@ -51,7 +53,7 @@ const styles = StyleSheet.create({
     borderRadius: 10,
     borderWidth: 1,
     borderColor: ORANGE,
-    backgroundColor: "#FFFFFF",
+    backgroundColor: WHITE,
     marginTop: 10,
   },
   createAccountText: {

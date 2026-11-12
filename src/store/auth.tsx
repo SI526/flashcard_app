@@ -17,11 +17,21 @@ type AuthStore = {
   userId: string | null; // the logged-in user's Supabase id, or null when logged out
   name: string; // the full name from sign-up ("" if none, e.g. older accounts)
   email: string; // the logged-in user's email ("" when logged out)
+  timeZone: string | null; // the account's saved time zone, e.g. "America/Detroit" (null until first saved)
+  breakReminders: BreakReminders | null; // the saved break reminder settings (null = reminders off)
+  saveBreakReminders: (settings: BreakReminders | null) => Promise<string | null>;
   logIn: (email: string, password: string) => Promise<string | null>;
   signUp: (name: string, email: string, password: string) => Promise<string | null>;
   logOut: () => Promise<void>;
   resetPassword: (email: string) => Promise<string | null>;
+  updateName: (name: string) => Promise<string | null>;
 };
+
+// Break reminder settings, in minutes (each 5 to 60).
+export type BreakReminders = { intervalMinutes: number; breakMinutes: number };
+
+// Shown when saving break reminders fails.
+const SAVE_REMINDERS_FAILED_MESSAGE = "We couldn’t save your reminders. Please try again.";
 
 // Shown when someone signs up with an email that already has an account.
 export const DUPLICATE_EMAIL_MESSAGE =
@@ -37,6 +47,9 @@ const WRONG_CREDENTIALS_MESSAGE =
 
 // Shown when login fails because of the connection or a Supabase service problem.
 const LOGIN_FAILED_MESSAGE = "We couldn’t log you in. Please try again.";
+
+// Shown when saving a new name fails.
+const UPDATE_NAME_FAILED_MESSAGE = "We couldn’t save your name. Please try again.";
 
 const AuthContext = createContext<AuthStore | null>(null);
 
@@ -67,6 +80,11 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   // `user_metadata` is where Supabase keeps the extra info we saved at sign-up.
   const name: string = session?.user.user_metadata.name ?? "";
   const email = session?.user.email ?? "";
+  // Saved the first time the user studies (see the streaks store).
+  const timeZone: string | null = session?.user.user_metadata.time_zone ?? null;
+  // Saved from the study screen's Break reminders popup; missing means reminders are off.
+  const breakReminders: BreakReminders | null =
+    session?.user.user_metadata.break_reminders ?? null;
 
   async function logIn(email: string, password: string) {
     let error;
@@ -133,6 +151,29 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     return error ? error.message : null;
   }
 
+  // Saves break reminder settings on the account (null turns them off), so they
+  // follow the user to every device. Like the name, `breakReminders` updates everywhere.
+  async function saveBreakReminders(settings: BreakReminders | null) {
+    try {
+      const { error } = await supabase.auth.updateUser({ data: { break_reminders: settings } });
+      return error ? SAVE_REMINDERS_FAILED_MESSAGE : null;
+    } catch {
+      return SAVE_REMINDERS_FAILED_MESSAGE;
+    }
+  }
+
+  // Saves a new name on the account (the same place sign-up put it). Supabase then
+  // sends the updated user to onAuthStateChange, so `name` updates on every screen.
+  async function updateName(name: string) {
+    try {
+      const { error } = await supabase.auth.updateUser({ data: { name } });
+      return error ? UPDATE_NAME_FAILED_MESSAGE : null;
+    } catch {
+      // Something unexpected broke before Supabase could answer (e.g. no connection).
+      return UPDATE_NAME_FAILED_MESSAGE;
+    }
+  }
+
   return (
     <AuthContext.Provider
       value={{
@@ -141,10 +182,14 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         userId,
         name,
         email,
+        timeZone,
+        breakReminders,
+        saveBreakReminders,
         logIn,
         signUp,
         logOut,
         resetPassword,
+        updateName,
       }}
     >
       {children}

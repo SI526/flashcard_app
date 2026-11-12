@@ -1,11 +1,20 @@
+import PageBackground from "@/components/PageBackground";
+import BreakRemindersDialog from "@/components/BreakRemindersDialog";
+import BreakTimeDialog from "@/components/BreakTimeDialog";
+import { useBreakReminders } from "@/hooks/useBreakReminders";
 import CardEditor from "@/components/CardEditor";
-import { ORANGE } from "@/constants/theme";
+import { ChevronRightIcon, GearIcon } from "@/components/Icons";
+import { useAuth } from "@/store/auth";
+import { ERROR_RED, ORANGE, TEXT_BLACK, TEXT_GREY, WHITE } from "@/constants/theme";
 import Flashcard from "@/components/Flashcard";
 import { type Card, useDecks } from "@/store/decks";
+import { type SavedSession, useSessions } from "@/store/sessions";
+import { useStreaks } from "@/store/streaks";
 import { router, useLocalSearchParams } from "expo-router";
 import { SymbolView, type SymbolViewProps } from "expo-symbols";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import {
+  ActivityIndicator,
   KeyboardAvoidingView,
   Modal,
   Platform,
@@ -35,18 +44,18 @@ type Session = Snapshot & { history: Snapshot[] };
 const SAVE_ERROR = "We couldn’t save your changes. Please try again.";
 
 function startSession(cardIds: string[]): Session {
-  return { remaining: cardIds, showingTerm: false, history: [] };
+  return { remaining: cardIds, showingTerm: true, history: [] };
 }
 
-// Records a practice choice. The next card always starts definition-side up.
+// Records a practice choice. The next card always starts term-side up.
 function choose(session: Session, remaining: string[]): Session {
   const { history, ...snapshot } = session;
-  return { remaining, showingTerm: false, history: [...history, snapshot] };
+  return { remaining, showingTerm: true, history: [...history, snapshot] };
 }
 
 // "X": randomly reinsert the current card into the remaining cards, but never
 // directly next. If it is the only card left, it comes straight back (index 0),
-// definition-side up, since `choose` resets the side and the card remounts.
+// term-side up, since `choose` resets the side and the card remounts.
 function practiceAgain(session: Session): Session {
   const [current, ...rest] = session.remaining;
   const index =
@@ -83,13 +92,24 @@ function shuffle(session: Session): Session {
 }
 
 // A deleted card is gone for good, so it's also dropped from every Undo
-// snapshot. The next card appears definition-side up.
+// snapshot. The next card appears term-side up.
 function removeCard(session: Session, cardId: string): Session {
   const without = (snapshot: Snapshot) => ({
     ...snapshot,
     remaining: snapshot.remaining.filter((id) => id !== cardId),
   });
-  return { ...without(session), showingTerm: false, history: session.history.map(without) };
+  return { ...without(session), showingTerm: true, history: session.history.map(without) };
+}
+
+// The card order to start with. With a saved session: its remaining cards in their
+// saved order (minus any deleted since), then any cards added to the deck since.
+// Cards that were studied stay done, so progress picks up where it was.
+// Without one: every card, in deck order.
+function resumeOrder(cardIds: string[], saved: SavedSession | undefined): string[] {
+  if (!saved) return cardIds;
+  const stillInDeck = saved.remaining.filter((cardId) => cardIds.includes(cardId));
+  const addedSince = cardIds.filter((cardId) => !saved.cardIds.includes(cardId));
+  return [...stillInDeck, ...addedSince];
 }
 
 function undo(session: Session): Session {
@@ -98,23 +118,77 @@ function undo(session: Session): Session {
   return { ...previous, history: session.history.slice(0, -1) };
 }
 
+// Waits for the decks and saved sessions to finish loading (only takes a moment right
+// after logging in), so a saved session is never missed and then saved over.
 export default function StudyScreen() {
+  const { isLoading: decksLoading } = useDecks();
+  const { isLoading: sessionsLoading } = useSessions();
+  if (decksLoading || sessionsLoading) {
+    return (
+      <PageBackground>
+        <View style={styles.loading}>
+          <ActivityIndicator color={ORANGE} />
+        </View>
+      </PageBackground>
+    );
+  }
+  return <StudySession />;
+}
+
+// The study session itself.
+function StudySession() {
   // `lastCardId` is only set when coming from the Complete page's "Back to last question".
   const { id, lastCardId } = useLocalSearchParams<{ id: string; lastCardId?: string }>();
-  const { getDeck, updateCard, deleteCard } = useDecks();
+  const { getDeck, updateCard, deleteCard, updateStatus } = useDecks();
   const deck = getDeck(id);
+  const { recordStudyDay } = useStreaks();
+  const { getSavedSession, saveSession, clearSession } = useSessions();
 
   const [session, setSession] = useState(() => {
     const cardIds = (deck?.cards ?? []).map((card) => card.id);
     // Back to last question: only that card is left, so the others stay done.
     if (lastCardId && cardIds.includes(lastCardId)) return startSession([lastCardId]);
-    return startSession(cardIds);
+    // Pick up where they left off, if this deck has a saved session.
+    return startSession(resumeOrder(cardIds, getSavedSession(id)));
   });
+
+  // Save the user's place whenever the remaining cards change (a ✓, ✗, swipe, shuffle,
+  // undo, or deleted card). Once every card is known, the deck is "Reviewed" and the
+  // saved place is forgotten. "Back to last question" is a one-card replay of a
+  // finished deck, so it never saves or changes the status.
+  // Starts as the opening order, so just opening a deck doesn't save anything; if a
+  // resumed session is already finished (null), the first run finishes it.
+  const lastSavedRemaining = useRef<string[] | null>(
+    session.remaining.length === 0 ? null : session.remaining,
+  );
+  useEffect(() => {
+    if (!deck || lastCardId) return;
+    if (session.remaining === lastSavedRemaining.current) return;
+    lastSavedRemaining.current = session.remaining;
+    if (session.remaining.length === 0) {
+      clearSession(deck.id);
+      if (deck.status !== "reviewed") {
+        // Studying keeps going even if saving the status fails.
+        updateStatus(deck.id, "reviewed").catch(() => {});
+      }
+    } else {
+      saveSession(deck.id, {
+        remaining: session.remaining,
+        cardIds: deck.cards.map((card) => card.id),
+      });
+    }
+  }, [deck, lastCardId, session.remaining, saveSession, clearSession, updateStatus]);
   // The unsaved definition while the current card is in editing mode.
   const [draft, setDraft] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
   const [saveFailed, setSaveFailed] = useState(false);
   const [confirmingDelete, setConfirmingDelete] = useState(false);
+  // The settings popup from the gear button.
+  const [showingSettings, setShowingSettings] = useState(false);
+  // Break reminders: study time doesn't count while a popup is open.
+  const { isOnBreak, breakSecondsLeft, endBreak } = useBreakReminders(
+    showingSettings || confirmingDelete,
+  );
 
   const cards = deck?.cards ?? [];
   const total = cards.length;
@@ -123,12 +197,29 @@ export default function StudyScreen() {
   const editing = draft !== null;
   const definitionMissing = draft !== null && draft.trim() === "";
 
-  const handlePracticeAgain = () => setSession(practiceAgain);
-  const handleMarkKnown = () => setSession(markKnown);
+  // Study status: the first flip or answer makes a deck "In progress", including a
+  // "Reviewed" deck being studied again. (It becomes "Reviewed" once every card is
+  // known; see the save effect above.) Just opening a deck doesn't count.
+  const markInProgress = () => {
+    if (!deck || lastCardId || deck.status === "in_progress") return;
+    // Studying keeps going even if saving the status fails.
+    updateStatus(deck.id, "in_progress").catch(() => {});
+  };
 
+  const handlePracticeAgain = () => {
+    markInProgress();
+    setSession(practiceAgain);
+  };
+  const handleMarkKnown = () => {
+    // The last card goes straight to "Reviewed" instead (no In progress in between).
+    if (session.remaining.length > 1) markInProgress();
+    setSession(markKnown);
+  };
+
+  // Closes the study screen and goes to Your Library (the place is saved, so
+  // Start studying picks up from here later).
   const exit = () => {
-    if (router.canGoBack()) router.back();
-    else router.replace("/");
+    router.dismissTo("/library");
   };
 
   // Every card is known: go to the completed page, keeping the same deck id.
@@ -191,136 +282,159 @@ export default function StudyScreen() {
 
   if (total === 0) {
     return (
-      <SafeAreaView style={styles.screen}>
-        <View style={styles.body}>
-          <View style={styles.doneCard}>
-            <Text style={styles.doneText}>This deck is empty</Text>
+      <PageBackground>
+        <SafeAreaView style={styles.screen}>
+          <View style={styles.body}>
+            <View style={styles.doneCard}>
+              <Text style={styles.doneText}>This deck is empty</Text>
+            </View>
+            <TextButton label="Back to library" onPress={() => router.replace("/library")} />
           </View>
-          <TextButton label="Back to library" onPress={() => router.replace("/library")} />
-        </View>
-      </SafeAreaView>
+        </SafeAreaView>
+      </PageBackground>
     );
   }
 
   return (
-    <SafeAreaView style={styles.screen}>
-      <View style={styles.header}>
-        <Pressable
-          role="button"
-          onPress={exit}
-          disabled={editing}
-          style={[styles.exitButton, editing && styles.disabled]}
-        >
-          <Text style={styles.exitText}>Exit</Text>
-        </Pressable>
-      </View>
-
-      <KeyboardAvoidingView
-        style={[styles.body, editing && styles.bodyEditing]}
-        behavior={Platform.OS === "ios" ? "padding" : undefined}
-      >
-        <View
-          style={styles.progress}
-          accessible
-          accessibilityLabel={`${known} of ${total} cards known`}
-        >
-          <Text style={styles.progressText}>
-            {known}/{total}
-          </Text>
-          <View style={styles.progressTrack}>
-            <View
-              style={[
-                styles.progressFill,
-                { width: `${(known / total) * 100}%` },
-              ]}
-            />
-          </View>
+    <PageBackground>
+      <SafeAreaView style={styles.screen}>
+        <View style={styles.header}>
+          {/* Settings: opens the study settings menu (Break reminders, etc.) */}
+          <Pressable
+            role="button"
+            accessibilityLabel="Study settings"
+            onPress={() => setShowingSettings(true)}
+            disabled={editing}
+            style={[styles.settingsButton, editing && styles.disabled]}
+          >
+            <GearIcon color={ORANGE} />
+          </Pressable>
+          <Pressable
+            role="button"
+            onPress={exit}
+            disabled={editing}
+            style={[styles.exitButton, editing && styles.disabled]}
+          >
+            <Text style={styles.exitText}>Exit</Text>
+          </Pressable>
         </View>
 
-        {current && draft !== null ? (
-          <View style={styles.editor}>
-            <CardEditor
-              definition={draft}
-              onChange={setDraft}
-              onDelete={() => setConfirmingDelete(true)}
-              disabled={saving}
-            />
-            {definitionMissing && (
-              <Text role="alert" style={styles.errorText}>
-                Please enter a definition
-              </Text>
-            )}
-            {saveFailed && (
-              <Text role="alert" style={styles.errorText}>
-                {SAVE_ERROR}
-              </Text>
-            )}
-            <View style={styles.editButtons}>
-              <TextButton label="Cancel" onPress={cancelEditing} disabled={saving} />
-              <TextButton
-                label="Save"
-                primary
-                onPress={saveEdits}
-                disabled={saving || definitionMissing}
+        <KeyboardAvoidingView
+          style={[styles.body, editing && styles.bodyEditing]}
+          behavior={Platform.OS === "ios" ? "padding" : undefined}
+        >
+          <View
+            style={styles.progress}
+            accessible
+            accessibilityLabel={`${known} of ${total} cards known`}
+          >
+            <Text style={styles.progressText}>
+              {known}/{total}
+            </Text>
+            <View style={styles.progressTrack}>
+              <View
+                style={[
+                  styles.progressFill,
+                  { width: `${(known / total) * 100}%` },
+                ]}
               />
             </View>
           </View>
-        ) : current ? (
-          // Remount on every choice, undo or deletion, so the card resets its
-          // swipe position and appears with the side recorded in the session.
-          <SwipeableCard
-            key={`${session.history.length}-${current.id}`}
-            card={current}
-            showingTerm={session.showingTerm}
-            onFlip={(showingTerm) => setSession((s) => ({ ...s, showingTerm }))}
-            onEdit={startEditing}
-            onSwipeLeft={handlePracticeAgain}
-            onSwipeRight={handleMarkKnown}
-          />
-        ) : (
-          <View style={styles.doneCard}>
-            <Text style={styles.doneText}>You’ve reviewed all your cards!</Text>
-          </View>
-        )}
 
-        <View style={styles.actions}>
-          <View style={styles.choiceButtons}>
-            <IconButton
-              label="Practice again"
-              icon={{ ios: "xmark", android: "close", web: "close" }}
-              onPress={handlePracticeAgain}
-              disabled={!current || editing}
+          {current && draft !== null ? (
+            <View style={styles.editor}>
+              <CardEditor
+                definition={draft}
+                onChange={setDraft}
+                onDelete={() => setConfirmingDelete(true)}
+                disabled={saving}
+              />
+              {definitionMissing && (
+                <Text role="alert" style={styles.errorText}>
+                  Please enter a definition
+                </Text>
+              )}
+              {saveFailed && (
+                <Text role="alert" style={styles.errorText}>
+                  {SAVE_ERROR}
+                </Text>
+              )}
+              <View style={styles.editButtons}>
+                <TextButton label="Cancel" onPress={cancelEditing} disabled={saving} />
+                <TextButton
+                  label="Save"
+                  primary
+                  onPress={saveEdits}
+                  disabled={saving || definitionMissing}
+                />
+              </View>
+            </View>
+          ) : current ? (
+            // Remount on every choice, undo or deletion, so the card resets its
+            // swipe position and appears with the side recorded in the session.
+            <SwipeableCard
+              key={`${session.history.length}-${current.id}`}
+              card={current}
+              showingTerm={session.showingTerm}
+              onFlip={(showingTerm) => {
+                setSession((s) => ({ ...s, showingTerm }));
+                markInProgress();
+                // Any flip makes today a study day for the streak (only saved once a day).
+                recordStudyDay();
+              }}
+              onEdit={startEditing}
+              onSwipeLeft={handlePracticeAgain}
+              onSwipeRight={handleMarkKnown}
             />
-            <IconButton
-              label="Mark as known"
-              icon={{ ios: "checkmark", android: "check", web: "check" }}
-              onPress={handleMarkKnown}
-              disabled={!current || editing}
-            />
-          </View>
-          <View style={styles.choiceButtons}>
-            <IconButton
-              label="Shuffle cards"
-              icon={{ ios: "shuffle", android: "shuffle", web: "shuffle" }}
-              onPress={() => setSession(shuffle)}
-              disabled={session.remaining.length < 2 || editing}
-            />
-            <IconButton
-              label="Undo"
-              icon={{ ios: "arrow.counterclockwise", android: "replay", web: "replay" }}
-              onPress={() => setSession(undo)}
-              disabled={session.history.length === 0 || editing}
-            />
-          </View>
-        </View>
-      </KeyboardAvoidingView>
+          ) : (
+            <View style={styles.doneCard}>
+              <Text style={styles.doneText}>You’ve reviewed all your cards!</Text>
+            </View>
+          )}
 
-      <DeleteConfirmation
-        visible={confirmingDelete}
-        onCancel={() => setConfirmingDelete(false)}
-        onConfirm={confirmDelete}
-      />
-    </SafeAreaView>
+          <View style={styles.actions}>
+            <View style={styles.choiceButtons}>
+              <IconButton
+                label="Practice again"
+                icon={{ ios: "xmark", android: "close", web: "close" }}
+                onPress={handlePracticeAgain}
+                disabled={!current || editing}
+              />
+              <IconButton
+                label="Mark as known"
+                icon={{ ios: "checkmark", android: "check", web: "check" }}
+                onPress={handleMarkKnown}
+                disabled={!current || editing}
+              />
+            </View>
+            <View style={styles.choiceButtons}>
+              <IconButton
+                label="Shuffle cards"
+                icon={{ ios: "shuffle", android: "shuffle", web: "shuffle" }}
+                onPress={() => setSession(shuffle)}
+                disabled={session.remaining.length < 2 || editing}
+              />
+              <IconButton
+                label="Undo"
+                icon={{ ios: "arrow.counterclockwise", android: "replay", web: "replay" }}
+                onPress={() => setSession(undo)}
+                disabled={session.history.length === 0 || editing}
+              />
+            </View>
+          </View>
+        </KeyboardAvoidingView>
+
+        <DeleteConfirmation
+          visible={confirmingDelete}
+          onCancel={() => setConfirmingDelete(false)}
+          onConfirm={confirmDelete}
+        />
+
+        <SettingsMenu visible={showingSettings} onClose={() => setShowingSettings(false)} />
+
+        <BreakTimeDialog visible={isOnBreak} secondsLeft={breakSecondsLeft} onDismiss={endBreak} />
+      </SafeAreaView>
+    </PageBackground>
   );
 }
 
@@ -421,6 +535,51 @@ function DeleteConfirmation({ visible, onCancel, onConfirm }: DeleteConfirmation
   );
 }
 
+type SettingsMenuProps = {
+  visible: boolean;
+  onClose: () => void;
+};
+
+// The settings popup from the gear button. Tapping outside the box closes it.
+// Only Break reminders for now; the exact menu design is still coming.
+// The menu and the Break reminders popup share one Modal (iOS can't open a second
+// Modal while the first one is still closing), so this just swaps what's inside.
+function SettingsMenu({ visible, onClose }: SettingsMenuProps) {
+  const { breakReminders } = useAuth();
+  const [page, setPage] = useState<"menu" | "breakReminders">("menu");
+
+  // Always reopen on the menu.
+  const close = () => {
+    setPage("menu");
+    onClose();
+  };
+
+  return (
+    <Modal visible={visible} transparent animationType="fade" onRequestClose={close}>
+      {/* The dark area around the box: tapping it closes the popup */}
+      <Pressable style={styles.settingsOverlay} onPress={close} accessibilityLabel="Close settings">
+        {/* A plain Pressable here stops taps inside the box from closing it */}
+        {page === "menu" ? (
+          <Pressable style={styles.settingsBox} role="dialog" aria-modal>
+            <Pressable style={styles.settingsRow} onPress={() => setPage("breakReminders")}>
+              <Text style={styles.settingsRowText}>Break reminders</Text>
+              {/* On when reminders are saved on the account, Off otherwise */}
+              <Text style={[styles.settingsRowStatus, breakReminders === null && styles.settingsRowStatusOff]}>
+                {breakReminders !== null ? "On" : "Off"}
+              </Text>
+              <ChevronRightIcon color={TEXT_GREY} />
+            </Pressable>
+          </Pressable>
+        ) : (
+          <Pressable style={styles.settingsDialog} role="dialog" aria-modal>
+            <BreakRemindersDialog onClose={close} />
+          </Pressable>
+        )}
+      </Pressable>
+    </Modal>
+  );
+}
+
 type IconButtonProps = {
   label: string;
   icon: SymbolViewProps["name"];
@@ -485,14 +644,87 @@ function TextButton({ label, onPress, disabled, primary, destructive, wide }: Te
 
 // Matches the lo-fi wireframes (design/card-term.png, design/card-definition.png).
 const styles = StyleSheet.create({
+  // Spinner in the middle while decks and saved sessions load
+  loading: {
+    flex: 1,
+    justifyContent: "center",
+    alignItems: "center",
+  },
   screen: {
     flex: 1,
     paddingHorizontal: 24,
-    backgroundColor: "#FFFFFF",
   },
   header: {
-    alignItems: "flex-end",
+    // Layout: settings and Exit side by side, on the right
+    flexDirection: "row",
+    justifyContent: "flex-end",
+    alignItems: "center",
+    gap: 12, // between settings and Exit (estimated until the spec arrives)
     paddingTop: 24, // same spot as Exit on the Complete page
+  },
+  // Square settings button next to Exit
+  settingsButton: {
+    // Layout
+    height: 40,
+    padding: 8,
+    justifyContent: "center",
+    alignItems: "center",
+    // Style
+    borderRadius: 12,
+    borderWidth: 1.5,
+    borderColor: ORANGE, // Primary-500
+  },
+  // ─── Settings popup (basic styling until the design is done) ───
+  // Dark see-through layer, same as the other popups
+  settingsOverlay: {
+    flex: 1,
+    justifyContent: "center",
+    alignItems: "center",
+    padding: 24,
+    backgroundColor: "rgba(20, 17, 15, 0.48)",
+  },
+  settingsBox: {
+    width: "100%",
+    gap: 12,
+    padding: 24,
+    borderRadius: 16,
+    backgroundColor: WHITE,
+    boxShadow: "0 8px 32px 0 rgba(19, 25, 39, 0.19)",
+  },
+  // One option, like the Preferences rows on Edit Profile
+  settingsRow: {
+    flexDirection: "row",
+    justifyContent: "space-between",
+    alignItems: "center",
+    gap: 12,
+    paddingVertical: 12,
+    paddingHorizontal: 14,
+    borderRadius: 8,
+    borderWidth: 1.5,
+    borderColor: "#E5E7EA", // Grey-200
+    backgroundColor: WHITE,
+  },
+  settingsRowText: {
+    flex: 1,
+    color: TEXT_BLACK,
+    fontFamily: "Inter_500Medium",
+    fontSize: 14,
+    lineHeight: 20,
+  },
+  // "On" next to Break reminders, like Study reminders on Edit Profile
+  settingsRowStatus: {
+    color: ORANGE,
+    fontFamily: "Inter_500Medium",
+    fontSize: 14,
+    lineHeight: 20,
+  },
+  // "Off" is grey, so "On" in orange stands out
+  settingsRowStatusOff: {
+    color: TEXT_GREY,
+  },
+  // Holds the Break reminders popup (it brings its own box styling)
+  settingsDialog: {
+    width: "100%",
   },
   // Exit matches the Complete page's Exit button.
   exitButton: {
@@ -509,7 +741,7 @@ const styles = StyleSheet.create({
   },
   exitText: {
     // Typography
-    color: "#FFFFFF",
+    color: WHITE,
     textAlign: "center",
     fontFamily: "Inter_600SemiBold",
     fontSize: 14,
@@ -561,7 +793,7 @@ const styles = StyleSheet.create({
     gap: 12,
   },
   errorText: {
-    color: "#C62828",
+    color: ERROR_RED,
     fontSize: 13,
     textAlign: "center",
   },
@@ -614,7 +846,7 @@ const styles = StyleSheet.create({
     borderRadius: 8,
     paddingHorizontal: 16,
     paddingVertical: 10,
-    backgroundColor: "#FFFFFF",
+    backgroundColor: WHITE,
   },
   textButtonPrimary: {
     borderColor: ORANGE,
@@ -634,7 +866,7 @@ const styles = StyleSheet.create({
     fontSize: 15,
   },
   textButtonTextPrimary: {
-    color: "#FFFFFF",
+    color: WHITE,
   },
   textButtonTextDestructive: {
     color: "#C62828",
@@ -652,7 +884,7 @@ const styles = StyleSheet.create({
     gap: 12,
     padding: 24,
     borderRadius: 12,
-    backgroundColor: "#FFFFFF",
+    backgroundColor: WHITE,
   },
   dialogTitle: {
     color: "#000000",

@@ -1,9 +1,12 @@
-import { ORANGE } from "@/constants/theme";
+import PageBackground from "@/components/PageBackground";
+import { ERROR_RED, ORANGE, ORANGE_100, TEXT_BLACK, TEXT_GREY, WHITE } from "@/constants/theme";
 import { AddIcon, CheckIcon, TrashIcon } from "@/components/Icons";
 import { useDecks } from "@/store/decks";
+import { setLeaveGuard } from "@/utils/leaveGuard";
 import { router } from "expo-router";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import {
+  Modal,
   Pressable,
   ScrollView,
   StyleSheet,
@@ -21,7 +24,49 @@ export default function CreateScreen() {
   const [titleError, setTitleError] = useState("");
   const [descriptionError, setDescriptionError] = useState("");
   const [saveError, setSaveError] = useState("");
+  // Which box the user is typing in, so it gets the orange border (like Edit Profile's name).
+  const [focusedField, setFocusedField] = useState<"title" | "description" | null>(null);
   const { addDeck } = useDecks();
+
+  // Something has been typed (or cards added/removed) since the form was empty.
+  const hasChanges =
+    deckTitle !== "" ||
+    deckDescription !== "" ||
+    cards.length !== 1 ||
+    cards.some((card) => card.term !== "" || card.answer !== "");
+
+  // "Discard this deck?" popup, shown when a tab is tapped with an unfinished deck.
+  // `pendingLeave` is the tab switch to finish if they choose to discard.
+  const [pendingLeave, setPendingLeave] = useState<(() => void) | null>(null);
+
+  // While there are changes, the tab bar asks this screen before leaving it.
+  useEffect(() => {
+    if (!hasChanges) return;
+    return setLeaveGuard("create", (leave) => {
+      setPendingLeave(() => leave); // a function in state needs the () => wrapper
+      return true; // stop the tab switch; the popup decides
+    });
+  }, [hasChanges]);
+
+  // Empties the form back to how it starts.
+  function clearForm() {
+    setDeckTitle("");
+    setDeckDescription("");
+    setCards([{ id: 1, term: "", answer: "" }]); // same as the starting form
+    setShowCardErrors(false);
+    setTitleError("");
+    setDescriptionError("");
+    setCardCountError("");
+    setSaveError("");
+  }
+
+  // "Discard deck": clear the form, then go to the tab they tapped.
+  function discardAndLeave() {
+    const leave = pendingLeave;
+    setPendingLeave(null);
+    clearForm();
+    leave?.();
+  }
 
   function changeCardText(id: number, field: "term" | "answer", text: string) {
     setCards((previousCards) =>
@@ -47,12 +92,8 @@ export default function CreateScreen() {
     // (e.g. no internet), show the message instead of leaving the page.
     try {
       const id = await addDeck(deckTitle, deckDescription, cards);
-      setSaveError("");
       // The deck is saved, so clear the form for the next new deck.
-      setDeckTitle("");
-      setDeckDescription("");
-      setCards([{ id: 1, term: "", answer: "" }]); // same as the starting form
-      setShowCardErrors(false);
+      clearForm();
       router.push({ pathname: "/preview", params: { id } });
     } catch (error) {
       setSaveError(
@@ -94,100 +135,142 @@ export default function CreateScreen() {
     return isValid;
   }
   return (
-    <ScrollView
-      contentContainerStyle={styles.container}
-      keyboardShouldPersistTaps="handled"
-    >
-      <View style={styles.deckContainer}>
-        <View style={styles.field}>
-          <View
-            style={[styles.titleGroup, titleError !== "" && styles.groupError]}
-          >
-            <TextInput
-              placeholder="Title"
-              placeholderTextColor="#9EA2AE"
-              value={deckTitle}
-              onChangeText={setDeckTitle}
-              style={styles.deckTitle}
-            />
+    <PageBackground>
+      <ScrollView
+        contentContainerStyle={styles.container}
+        keyboardShouldPersistTaps="handled"
+      >
+        <View style={styles.deckContainer}>
+          <View style={styles.field}>
+            <View
+              style={[
+                styles.titleGroup,
+                focusedField === "title" && styles.groupFocused,
+                titleError !== "" && styles.groupError,
+              ]}
+            >
+              <TextInput
+                placeholder="Title"
+                placeholderTextColor={TEXT_GREY}
+                value={deckTitle}
+                onChangeText={setDeckTitle}
+                onFocus={() => setFocusedField("title")}
+                onBlur={() => setFocusedField(null)}
+                style={styles.deckTitle}
+              />
+            </View>
+            {titleError !== "" ? (
+              <Text style={styles.errorText}>{titleError}</Text>
+            ) : (
+              <Text style={[styles.helperText, focusedField === "title" && styles.helperTextFocused]}>
+                Add name of deck!
+              </Text>
+            )}
           </View>
-          {titleError !== "" ? (
-            <Text style={styles.errorText}>{titleError}</Text>
-          ) : (
-            <Text style={styles.helperText}>Add name of deck!</Text>
-          )}
-        </View>
 
-        <View style={styles.field}>
-          <View
-            style={[
-              styles.descriptionGroup,
-              descriptionError !== "" && styles.groupError,
-            ]}
-          >
-            <TextInput
-              placeholder="Add a description..."
-              placeholderTextColor="#9EA2AE"
-              value={deckDescription}
-              onChangeText={setDeckDescription}
-              style={styles.deckDescription}
-            />
+          <View style={styles.field}>
+            <View
+              style={[
+                styles.descriptionGroup,
+                focusedField === "description" && styles.groupFocused,
+                descriptionError !== "" && styles.groupError,
+              ]}
+            >
+              <TextInput
+                placeholder="Add a description..."
+                placeholderTextColor={TEXT_GREY}
+                value={deckDescription}
+                onChangeText={setDeckDescription}
+                onFocus={() => setFocusedField("description")}
+                onBlur={() => setFocusedField(null)}
+                style={styles.deckDescription}
+              />
+            </View>
+            {descriptionError !== "" ? (
+              <Text style={styles.errorText}>{descriptionError}</Text>
+            ) : (
+              <Text
+                style={[styles.helperText, focusedField === "description" && styles.helperTextFocused]}
+              >
+                Add a short description of study materials.
+              </Text>
+            )}
           </View>
-          {descriptionError !== "" ? (
-            <Text style={styles.errorText}>{descriptionError}</Text>
-          ) : (
-            <Text style={styles.helperText}>
-              Add a short description of study materials.
-            </Text>
-          )}
         </View>
-      </View>
-      {cards.map((card) => (
-        <View key={card.id} style={styles.card}>
-          <TextInput
-            value={card.term}
-            style={styles.term}
-            onChangeText={(text) => changeCardText(card.id, "term", text)}
-          />
-          <Text style={styles.cardLabel}>Term</Text>
-          {showCardErrors && card.term === "" && (
-            <Text style={styles.errorTermDef}>Please enter a term.</Text>
-          )}
-          <TextInput
-            value={card.answer}
-            style={styles.answer}
-            onChangeText={(text) => changeCardText(card.id, "answer", text)}
-            multiline
-          />
-          <Text style={styles.cardLabel}>Definition</Text>
-          {showCardErrors && card.answer === "" && (
-            <Text style={styles.errorTermDef}>Please enter a definition.</Text>
-          )}
-          <Pressable
-            onPress={() => deleteCard(card.id)}
-            style={styles.deleteButton}
-            accessibilityLabel="Delete card"
-          >
-            <TrashIcon color={ORANGE} />
+        {cards.map((card) => (
+          <View key={card.id} style={styles.card}>
+            <TextInput
+              value={card.term}
+              style={styles.term}
+              onChangeText={(text) => changeCardText(card.id, "term", text)}
+            />
+            <Text style={styles.cardLabel}>Term</Text>
+            {showCardErrors && card.term === "" && (
+              <Text style={styles.errorTermDef}>Please enter a term.</Text>
+            )}
+            <TextInput
+              value={card.answer}
+              style={styles.answer}
+              onChangeText={(text) => changeCardText(card.id, "answer", text)}
+              multiline
+            />
+            <Text style={styles.cardLabel}>Definition</Text>
+            {showCardErrors && card.answer === "" && (
+              <Text style={styles.errorTermDef}>Please enter a definition.</Text>
+            )}
+            <Pressable
+              onPress={() => deleteCard(card.id)}
+              style={styles.deleteButton}
+              accessibilityLabel="Delete card"
+            >
+              <TrashIcon color={ORANGE} />
+            </Pressable>
+          </View>
+        ))}
+        <View style={styles.buttons}>
+          <Pressable onPress={addCard} style={styles.addCardButton}>
+            <Text style={styles.addCardText}>Add New Card</Text>
+            <AddIcon color={ORANGE} />
           </Pressable>
-        </View>
-      ))}
-      <View style={styles.buttons}>
-        <Pressable onPress={addCard} style={styles.addCardButton}>
-          <Text style={styles.addCardText}>Add New Card</Text>
-          <AddIcon color={ORANGE} />
-        </Pressable>
 
-        <Pressable onPress={completeDeck} style={styles.completeDeckButton}>
-          <Text style={styles.buttonText}>Complete Deck</Text>
-          <CheckIcon color="#FFFFFF" />
-        </Pressable>
-        {cardCountError !== "" && (
-          <Text style={styles.errorText}>{cardCountError}</Text>
-        )}
-        {saveError !== "" && <Text style={styles.errorText}>{saveError}</Text>}
-      </View>
-    </ScrollView>
+          <Pressable onPress={completeDeck} style={styles.completeDeckButton}>
+            <Text style={styles.buttonText}>Complete Deck</Text>
+            <CheckIcon color={WHITE} />
+          </Pressable>
+          {cardCountError !== "" && (
+            <Text style={styles.errorText}>{cardCountError}</Text>
+          )}
+          {saveError !== "" && <Text style={styles.errorText}>{saveError}</Text>}
+        </View>
+      </ScrollView>
+
+      {/* Shown when a tab is tapped with an unfinished deck (same look as Edit Profile's popup) */}
+      <Modal
+        visible={pendingLeave !== null}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setPendingLeave(null)}
+      >
+        <View style={styles.leaveOverlay}>
+          <View style={styles.leaveBox} role="alertdialog" aria-modal>
+            <View style={styles.leaveTextGroup}>
+              <Text style={styles.leaveTitle}>Discard this deck?</Text>
+              <Text style={styles.leaveDescription}>
+                You have an unfinished deck. If you leave now, it won’t be saved.
+              </Text>
+            </View>
+            <View style={styles.leaveButtons}>
+              <Pressable style={styles.keepEditingButton} onPress={() => setPendingLeave(null)}>
+                <Text style={styles.keepEditingText}>Keep editing</Text>
+              </Pressable>
+              <Pressable style={styles.discardButton} onPress={discardAndLeave}>
+                <Text style={styles.discardText}>Discard deck</Text>
+              </Pressable>
+            </View>
+          </View>
+        </View>
+      </Modal>
+    </PageBackground>
   );
 }
 
@@ -195,7 +278,7 @@ const styles = StyleSheet.create({
   container: {
     flexGrow: 1,
     padding: 24,
-    backgroundColor: "#FFFFFF",
+    paddingTop: 84, // no header on this tab, so keep the form below the status bar
   },
   deckContainer: {
     width: "100%",
@@ -221,7 +304,7 @@ const styles = StyleSheet.create({
     flexBasis: 0,
     padding: 0,
     // Typography
-    color: "#131927",
+    color: TEXT_BLACK,
     fontFamily: "Inter_400Regular",
     fontSize: 16,
     lineHeight: 24,
@@ -229,14 +312,23 @@ const styles = StyleSheet.create({
   field: {
     gap: 8,
   },
+  // While typing: orange border like Edit Profile's name box; the grey background stays.
+  groupFocused: {
+    borderColor: ORANGE, // Primary-500
+  },
+  // Listed after groupFocused, so a red error border shows even while typing.
   groupError: {
-    borderColor: "#E21D1D",
+    borderColor: ERROR_RED,
   },
   helperText: {
-    color: "#9EA2AE",
+    color: TEXT_GREY,
     fontFamily: "Inter_400Regular",
     fontSize: 14,
     lineHeight: 20,
+  },
+  // Helper text turns orange with its box while typing
+  helperTextFocused: {
+    color: ORANGE,
   },
   descriptionGroup: {
     flexDirection: "row",
@@ -256,41 +348,55 @@ const styles = StyleSheet.create({
     flexBasis: 0,
     padding: 0,
     // Typography
-    color: "#131927",
+    color: TEXT_BLACK,
     fontFamily: "Inter_400Regular",
     fontSize: 16,
     lineHeight: 24,
   },
+  // Card styles match editdeck.tsx
   card: {
-    width: "100%",
-    borderWidth: 1,
-    borderColor: "#D2D5DB",
+    // Layout
+    width: "100%", // width: 345px → full width inside the page padding
+    paddingVertical: 12,
+    paddingHorizontal: 20,
+    justifyContent: "center",
+    marginTop: 12,
+    // Style
     borderRadius: 8,
-    paddingHorizontal: 12,
-    paddingTop: 12,
-    paddingBottom: 12,
-    marginTop: 16,
+    borderWidth: 1,
+    borderColor: ORANGE_100,
+    backgroundColor: WHITE,
   },
   term: {
+    // Layout
+    height: 27,
+    alignSelf: "stretch",
+    paddingVertical: 0, // padding would cut off the text in a 27-tall box
+    // Style
     borderBottomWidth: 1,
-    borderBottomColor: "#D2D5DB",
-    paddingVertical: 8,
-    color: "#131927",
+    borderBottomColor: ORANGE_100,
+    // Typography
+    color: TEXT_BLACK,
     fontFamily: "Inter_400Regular",
     fontSize: 16,
   },
   answer: {
-    borderBottomWidth: 1,
-    borderBottomColor: "#D2D5DB",
-    paddingVertical: 8,
+    // Layout
+    minHeight: 27, // grows for long definitions, since this input is multiline
+    alignSelf: "stretch",
+    paddingVertical: 0,
     marginTop: 12,
-    color: "#131927",
+    // Style
+    borderBottomWidth: 1,
+    borderBottomColor: ORANGE_100,
+    // Typography
+    color: TEXT_BLACK,
     fontFamily: "Inter_400Regular",
     fontSize: 16,
   },
   cardLabel: {
     marginTop: 4,
-    color: "#131927",
+    color: TEXT_BLACK,
     fontFamily: "Inter_400Regular",
     fontSize: 12,
     lineHeight: 16,
@@ -338,7 +444,7 @@ const styles = StyleSheet.create({
     marginTop: 28,
   },
   buttonText: {
-    color: "#FFFFFF",
+    color: WHITE,
     textAlign: "center",
     fontFamily: "Inter_600SemiBold",
     fontSize: 14,
@@ -353,10 +459,102 @@ const styles = StyleSheet.create({
   },
   errorText: {
     marginBottom: 5,
-    color: "#e21d1d",
+    color: ERROR_RED,
   },
   errorTermDef: {
     marginTop: 5,
-    color: "#e21d1d",
+    color: ERROR_RED,
+  },
+  // ─── "Discard this deck?" popup (same styles as Edit Profile's "Save changes?") ───
+  // Dark see-through layer behind the popup
+  leaveOverlay: {
+    // Layout
+    flex: 1,
+    justifyContent: "center",
+    alignItems: "center",
+    padding: 24,
+    // Style
+    backgroundColor: "rgba(20, 17, 15, 0.48)",
+  },
+  leaveBox: {
+    // Layout
+    width: "100%", // same width as the page's content: the overlay has the page's 24px side padding
+    flexDirection: "column",
+    alignItems: "flex-start",
+    gap: 20,
+    paddingVertical: 28, // padding: 28px 24px
+    paddingHorizontal: 24,
+    // Style
+    borderRadius: 16,
+    backgroundColor: WHITE,
+    boxShadow: "0 8px 32px 0 rgba(19, 25, 39, 0.19)",
+  },
+  leaveTextGroup: {
+    alignSelf: "stretch",
+    gap: 8,
+  },
+  leaveTitle: {
+    // Layout
+    alignSelf: "stretch",
+    // Typography (Text Font/S2. Subtitle)
+    color: TEXT_BLACK,
+    textAlign: "center",
+    fontFamily: "Inter_600SemiBold",
+    fontSize: 16,
+    lineHeight: 24,
+  },
+  leaveDescription: {
+    // Layout
+    alignSelf: "stretch",
+    // Typography (Text Font/B3. Body)
+    color: "#6D717F",
+    textAlign: "center",
+    fontFamily: "Inter_400Regular",
+    fontSize: 14,
+    lineHeight: 20,
+  },
+  leaveButtons: {
+    alignSelf: "stretch",
+    gap: 12,
+  },
+  // Keep editing: solid orange (the main choice)
+  keepEditingButton: {
+    // Layout
+    paddingVertical: 14, // padding: 14px 20px
+    paddingHorizontal: 20,
+    justifyContent: "center",
+    alignItems: "center",
+    alignSelf: "stretch",
+    // Style
+    borderRadius: 12,
+    backgroundColor: ORANGE,
+  },
+  keepEditingText: {
+    color: WHITE,
+    textAlign: "center",
+    fontFamily: "Inter_600SemiBold",
+    fontSize: 16,
+    lineHeight: 20,
+  },
+  // Discard deck: orange outline
+  discardButton: {
+    // Layout
+    paddingVertical: 14,
+    paddingHorizontal: 20,
+    justifyContent: "center",
+    alignItems: "center",
+    alignSelf: "stretch",
+    // Style
+    borderRadius: 12,
+    borderWidth: 1.5,
+    borderColor: ORANGE,
+    backgroundColor: WHITE,
+  },
+  discardText: {
+    color: ORANGE,
+    textAlign: "center",
+    fontFamily: "Inter_600SemiBold",
+    fontSize: 16,
+    lineHeight: 20,
   },
 });

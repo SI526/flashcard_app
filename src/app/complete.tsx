@@ -1,4 +1,5 @@
-import { ORANGE } from "@/constants/theme";
+import PageBackground from "@/components/PageBackground";
+import { ORANGE, TEXT_BLACK, WHITE } from "@/constants/theme";
 import { useDecks } from "@/store/decks";
 import { router, useLocalSearchParams } from "expo-router";
 import { Pressable, StyleSheet, Text, View } from "react-native";
@@ -9,12 +10,14 @@ export default function Complete() {
   // The deck id comes from study.tsx, so this page knows which deck was finished.
   // `lastCardId` is the card answered last in the study session.
   const { id, lastCardId } = useLocalSearchParams<{ id: string; lastCardId?: string }>();
-  const { getDeck } = useDecks();
+  const { getDeck, updateStatus } = useDecks();
   const deck = getDeck(id);
 
   // Replacing this page with a new Study screen starts the session over from card 1.
-  // Passing the same id keeps the same deck.
+  // Passing the same id keeps the same deck. Restarting sets the deck back to
+  // "Not started" until the first card is flipped.
   function restart() {
+    updateStatus(id, "not_started").catch(() => {});
     router.replace({ pathname: "/study", params: { id } });
   }
 
@@ -27,9 +30,9 @@ export default function Complete() {
     });
   }
 
-  // Closes this page and goes back to the Create tab (instead of stacking a new one on top).
+  // Closes this page and goes to Your Library (instead of stacking a new one on top).
   function exit() {
-    router.dismissTo("/create");
+    router.dismissTo("/library");
   }
 
   if (!deck) return <Text>Deck not found</Text>;
@@ -40,46 +43,48 @@ export default function Complete() {
   const known = total;
 
   return (
-    <SafeAreaView style={styles.container}>
-      <View style={styles.header}>
-        <Pressable onPress={exit} style={styles.exitButton}>
-          <Text style={styles.buttonText}>Exit</Text>
-        </Pressable>
-      </View>
+    <PageBackground>
+      <SafeAreaView style={styles.container}>
+        <View style={styles.header}>
+          <Pressable onPress={exit} style={styles.exitButton}>
+            <Text style={styles.buttonText}>Exit</Text>
+          </Pressable>
+        </View>
 
-      <View style={styles.body}>
-        <View style={styles.middleContent}>
-          <View
-            style={styles.progress}
-            accessible
-            accessibilityLabel={`${known} of ${total} cards known`}
-          >
-            <Text style={styles.progressText}>
-              {known}/{total}
-            </Text>
-            <View style={styles.progressTrack}>
-              <View
-                style={[
-                  styles.progressFill,
-                  { width: `${(known / total) * 100}%` },
-                ]}
-              />
+        <View style={styles.body}>
+          <View style={styles.middleContent}>
+            <View
+              style={styles.progress}
+              accessible
+              accessibilityLabel={`${known} of ${total} cards known`}
+            >
+              <Text style={styles.progressText}>
+                {known}/{total}
+              </Text>
+              <View style={styles.progressTrack}>
+                <View
+                  style={[
+                    styles.progressFill,
+                    { width: `${(known / total) * 100}%` },
+                  ]}
+                />
+              </View>
             </View>
+            <Text style={styles.completeTitle}>You&apos;ve completed studying this deck!</Text>
           </View>
-          <Text style={styles.completeTitle}>You&apos;ve completed studying this deck!</Text>
-        </View>
 
-        <View style={styles.actions}>
-          <Pressable onPress={restart} style={styles.restartButton}>
-            <Text style={styles.buttonText}>Restart Flashcards</Text>
-          </Pressable>
+          <View style={styles.actions}>
+            <Pressable onPress={restart} style={styles.restartButton}>
+              <Text style={styles.buttonText}>Restart Flashcards</Text>
+            </Pressable>
 
-          <Pressable onPress={backToLastQuestion} style={styles.backButton}>
-            <Text style={styles.backText}>Back to last question</Text>
-          </Pressable>
+            <Pressable onPress={backToLastQuestion} style={styles.backButton}>
+              <Text style={styles.backText}>Back to last question</Text>
+            </Pressable>
+          </View>
         </View>
-      </View>
-    </SafeAreaView>
+      </SafeAreaView>
+    </PageBackground>
   );
 }
 
@@ -87,8 +92,6 @@ const styles = StyleSheet.create({
   container: {
     // Layout
     flex: 1,
-    // Style
-    backgroundColor: "#FFFFFF",
   },
   header: {
     // Layout: a 109-wide box in the top-right; the padding pushes Exit 24 in from the edges
@@ -120,7 +123,7 @@ const styles = StyleSheet.create({
   },
   progressText: {
     // Typography
-    color: "#131927",
+    color: TEXT_BLACK,
     fontFamily: "Inter_400Regular",
     fontSize: 14,
     lineHeight: 20,
@@ -143,7 +146,7 @@ const styles = StyleSheet.create({
   },
   completeTitle: {
     // Typography (Figma Text Font/H4)
-    color: "#131927",
+    color: TEXT_BLACK,
     textAlign: "center",
     fontFamily: "Inter_600SemiBold",
     fontSize: 28,
@@ -181,7 +184,7 @@ const styles = StyleSheet.create({
   },
   buttonText: {
     // Typography (shared by Exit and Restart Flashcards)
-    color: "#FFFFFF",
+    color: WHITE,
     textAlign: "center",
     fontFamily: "Inter_600SemiBold",
     fontSize: 14,

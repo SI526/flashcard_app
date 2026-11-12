@@ -1,3 +1,4 @@
+import { WHITE } from "@/constants/theme";
 import { Button, Text, View, StyleSheet, Pressable } from "react-native";
 import {useState} from 'react';
 
@@ -18,6 +19,6 @@ const styles = StyleSheet.create({
   text: {
     padding: 25,
     fontSize: 24,
-    color: "#FFF"
+    color: WHITE
   }
 });

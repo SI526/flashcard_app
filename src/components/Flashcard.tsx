@@ -1,4 +1,4 @@
-import { ORANGE } from "@/constants/theme";
+import { ORANGE, WHITE } from "@/constants/theme";
 import { SymbolView } from "expo-symbols";
 import { useEffect, useRef, useState } from "react";
 import { Pressable, type ScrollView as RNScrollView, StyleSheet, Text } from "react-native";
@@ -133,7 +133,7 @@ const styles = StyleSheet.create({
     borderRadius: 8,
     borderWidth: 1,
     borderColor: ORANGE,
-    backgroundColor: "#FFFFFF",
+    backgroundColor: WHITE,
   },
   // Grows to fill the card so short text stays centered and the whole card is
   // tappable; longer text makes it taller than the card, which then scrolls.
@@ -164,7 +164,7 @@ const styles = StyleSheet.create({
     borderRadius: 8,
     borderWidth: 1,
     borderColor: "#000",
-    backgroundColor: "#FFFFFF",
+    backgroundColor: WHITE,
   },
   editButtonPressed: {
     backgroundColor: "#F2F2F2",
